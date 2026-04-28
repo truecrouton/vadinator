@@ -1,0 +1,17 @@
+[package]
+name = "vadinator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+cpal = "0.17.3"
+earshot = "1.1.0"
+ndarray = "0.17.2"
+tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "sync"] }
+whisper-rs = "0.16.0"
+
+[features]
+cuda = ["whisper-rs/cuda"]
+metal = ["whisper-rs/metal"]
+blas = ["whisper-rs/openblas"]
