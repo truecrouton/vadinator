@@ -1,8 +1,10 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
+use serde_json::json;
 use std::{collections::VecDeque, sync::mpsc as std_mpsc};
 use tokio::sync::mpsc;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState}; // Multi-producer, single-consumer
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+
 /// Calculates the Zero Crossing Rate.
 /// High ZCR (>60) usually indicates white noise, clicks, or "pops".
 /// In a 256-sample frame (16ms) @ 16kHz:
@@ -20,15 +22,6 @@ fn calculate_zcr(frame: &[f32]) -> usize {
 fn calculate_rms(frame: &[f32]) -> f32 {
     let sq_sum: f32 = frame.iter().map(|&s| s * s).sum();
     (sq_sum / frame.len() as f32).sqrt()
-}
-
-/// Convert f32 -> i16
-fn convert_f32_i16(frame: &[f32]) -> Vec<i16> {
-    const I16MAX: f32 = 32768.0;
-    return frame
-        .iter()
-        .map(|&s| (s * I16MAX as f32).clamp(i16::MIN as f32, I16MAX as f32) as i16)
-        .collect();
 }
 
 /// High-pass filter
@@ -62,41 +55,36 @@ fn sanitize_frame(frame: &mut [f32]) {
     }
 }
 
-fn run_whisper(state: &mut WhisperState, audio_data: &[f32]) {
-    // Set up parameters (Disable timestamps for speed)
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(4);
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
+async fn send_to_llama(text: String) -> Result<(), reqwest::Error> {
+    let client = reqwest::Client::new();
 
-    // Run the inference
-    state.full(params, audio_data).expect("Whisper failed");
+    // llama.cpp server usually runs on 8080, Ollama on 11434
+    let url = "http://localhost:8080/completion";
 
-    // 3. Fetch the results
-    let num_segments = state.full_n_segments();
-    if num_segments < 0 {
-        eprintln!("Whisper error: full_n_segments returned {}", num_segments);
-    } else {
-        for segment in state.as_iter() {
-            // Each 'segment' is a WhisperSegment object
-            match segment.to_str() {
-                Ok(text) => {
-                    let cleaned = text.trim();
-                    if !cleaned.is_empty() {
-                        println!("\n[Whisper]: {}", cleaned);
-                    }
-                }
-                Err(e) => eprintln!("Error reading segment: {:?}", e),
-            }
+    let body = json!({
+        "prompt": format!("\n\n### User: {}\n### Assistant:", text),
+        "n_predict": 128,
+        "stream": false
+    });
+
+    let res = client.post(url).json(&body).send().await?;
+
+    if res.status().is_success() {
+        let response_data: serde_json::Value = res.json().await?;
+
+        // Extract the actual string
+        if let Some(llama_text) = response_data["content"].as_str() {
+            // Send llama_text to Piper here
+            println!("🦙 Llama says: {}", llama_text);
         }
     }
+
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create a whisper channel: 'tx' is the sender, 'rx' is the receiver
+    // Create a whisper channel
     let (tx_whisper, rx_whisper) = std_mpsc::channel::<Vec<f32>>();
 
     // Run whisper in a thread so we don't block the audio loop
@@ -126,11 +114,18 @@ async fn main() -> anyhow::Result<()> {
                 .full(params, &audio_data[..])
                 .expect("Transcription failed");
 
+            let mut transcript = String::new();
             for segment in state.as_iter() {
                 if let Ok(text) = segment.to_str() {
-                    println!("\n[Whisper]: {}", text.trim());
+                    transcript.push(' ');
+                    transcript.push_str(text.trim());
                 }
             }
+            println!("\n[Whisper]: {}", transcript);
+
+            // Fire and forget to the Llama server
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(send_to_llama(transcript));
         }
     });
 
@@ -255,19 +250,19 @@ async fn main() -> anyhow::Result<()> {
                     silence_frames += 1;
                 }
 
-                if silence_frames >= MAX_SILENCE_FRAMES {
+                // After 1 sec of silence or up to 25 secs of talking
+                if silence_frames >= MAX_SILENCE_FRAMES || recording_buffer.len() > 400000 {
                     println!(
                         "✅ Phrase complete. Total samples: {}",
                         recording_buffer.len()
                     );
 
-                    // Send to whisper
-                    // At least 1 second of audio
-                    //if recording_buffer.len() > 16000 {
-                    let audio_to_process = std::mem::take(&mut recording_buffer);
+                    // Send to whisper at least 1 second of audio
+                    if recording_buffer.len() > 16000 {
+                        let audio_to_process = std::mem::take(&mut recording_buffer);
 
-                    tx_whisper.send(audio_to_process).ok();
-                    //}
+                        tx_whisper.send(audio_to_process).ok();
+                    }
 
                     // Reset everything for the next phrase
                     recording_buffer.clear();
