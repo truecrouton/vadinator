@@ -1,7 +1,17 @@
+mod piper_tts;
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
+use piper_tts::start_speech_worker;
 use serde_json::json;
-use std::{collections::VecDeque, sync::mpsc as std_mpsc};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
+};
 use tokio::sync::mpsc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
@@ -74,7 +84,7 @@ async fn send_to_llama(text: String) -> Result<(), reqwest::Error> {
 
         // Extract the actual string
         if let Some(llama_text) = response_data["content"].as_str() {
-            // Send llama_text to Piper here
+            // Send text to Piper here
             println!("🦙 Llama says: {}", llama_text);
         }
     }
@@ -86,10 +96,18 @@ async fn send_to_llama(text: String) -> Result<(), reqwest::Error> {
 async fn main() -> anyhow::Result<()> {
     // Create a whisper channel
     let (tx_whisper, rx_whisper) = std_mpsc::channel::<Vec<f32>>();
+    let (tx_speaker, rx_speaker) = std_mpsc::channel::<String>();
+    let is_speaking = Arc::new(AtomicBool::new(false));
+
+    start_speech_worker(rx_speaker, Arc::clone(&is_speaking));
+
+    tx_speaker
+        .send("Hello, I'm ready to chat.".to_string())
+        .ok();
 
     // Run whisper in a thread so we don't block the audio loop
     std::thread::spawn(move || {
-        // Load Whisper INSIDE the thread
+        // Load Whisper inside the thread
         let ctx = WhisperContext::new_with_params(
             "../models/whisper-ggml-small.en.bin",
             Default::default(),
@@ -106,8 +124,6 @@ async fn main() -> anyhow::Result<()> {
             params.set_print_progress(false);
             params.set_print_realtime(false);
             params.set_print_timestamps(false);
-
-            // This is the big one: keeps it from printing "whisper_full: etc..."
             params.set_suppress_blank(true);
 
             state
@@ -122,10 +138,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             println!("\n[Whisper]: {}", transcript);
+            tx_speaker.send(transcript.clone()).ok();
 
             // Fire and forget to the Llama server
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(send_to_llama(transcript));
+            let result = rt.block_on(send_to_llama(transcript));
+            match result {
+                Ok(()) => println!("Transcription sent."),
+                Err(e) => {
+                    eprintln!("Something went wrong: {:?}", e);
+                }
+            }
         }
     });
 
@@ -189,6 +212,11 @@ async fn main() -> anyhow::Result<()> {
     const MIN_SCORE_WAKE: f32 = 0.8;
 
     while let Some(chunk) = rx_hw.recv().await {
+        // If the bot is talking, just throw this audio in the trash
+        if is_speaking.load(Ordering::SeqCst) {
+            continue;
+        }
+
         // Decimate: 48,000 / 3 = 16,000
         let decimated: Vec<f32> = chunk.iter().step_by(3).cloned().collect();
 
