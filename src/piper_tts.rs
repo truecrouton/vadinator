@@ -17,7 +17,7 @@ pub fn start_speech_worker(rx: Receiver<String>, is_speaking: Arc<AtomicBool>) {
 
         // Initialize Piper
         // This looks for the .onnx and the .json automatically if you point it to the model file.
-        let config_path = "./en_US-hfc_female-medium.onnx.json";
+        let config_path = "./models/en_US-hfc_female-medium.onnx.json";
         let onnx_path = config_path.replace(".onnx.json", ".onnx");
         let speaker_id: Option<i64> = Some(0);
         let mut piper = Piper::new(Path::new(&onnx_path), Path::new(&config_path)).unwrap();

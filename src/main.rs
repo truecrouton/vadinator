@@ -92,11 +92,8 @@ async fn main() -> anyhow::Result<()> {
     // Run whisper in a thread so we don't block the audio loop
     std::thread::spawn(move || {
         // Load Whisper inside the thread
-        let ctx = WhisperContext::new_with_params(
-            "../models/whisper-ggml-small.en.bin",
-            Default::default(),
-        )
-        .unwrap();
+        let ctx =
+            WhisperContext::new_with_params("./models/small.en.bin", Default::default()).unwrap();
         let mut state = ctx.create_state().unwrap();
 
         // The thread sits here and waits for audio data
