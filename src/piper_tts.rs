@@ -1,3 +1,4 @@
+use log::{error, info};
 use piper_rs::Piper;
 use rodio::stream::DeviceSinkBuilder;
 use rodio::{Player, buffer::SamplesBuffer};
@@ -21,7 +22,7 @@ pub fn start_speech_worker(rx: Receiver<String>, is_speaking: Arc<AtomicBool>) {
         let speaker_id: Option<i64> = Some(0);
         let mut piper = Piper::new(Path::new(&onnx_path), Path::new(&config_path)).unwrap();
 
-        println!("🔈 piper-rs is ready.");
+        info!("🔈 piper-rs is ready.");
 
         while let Ok(text) = rx.recv() {
             is_speaking.store(true, Ordering::SeqCst);
@@ -49,7 +50,7 @@ pub fn start_speech_worker(rx: Receiver<String>, is_speaking: Arc<AtomicBool>) {
                     player.sleep_until_end();
                 }
                 Err(e) => {
-                    eprintln!("Failed to say '{}'. Error: {:?}", text, e);
+                    error!("Failed to say '{}'. Error: {:?}", text, e);
                 }
             }
 

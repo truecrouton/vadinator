@@ -7,11 +7,15 @@ edition = "2024"
 any-tts = "0.1.1"
 anyhow = "1.0.102"
 cpal = "0.17.3"
+dotenvy = "0.15.7"
 earshot = "1.1.0"
+env_logger = "0.11.10"
+log = "0.4.29"
 ndarray = "0.17.2"
 piper-rs = { git = "https://github.com/thewh1teagle/piper-rs.git", rev = "616e682" }
 reqwest = { version = "0.13.3", features = ["json"] }
 rodio = "0.22.2"
+serde = "1.0.228"
 serde_json = "1.0.149"
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "sync"] }
 whisper-rs = "0.16.0"

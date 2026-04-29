@@ -1,9 +1,13 @@
+mod chat_history;
+mod llm_client;
 mod piper_tts;
 
+use chat_history::ChatHistory;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
+use llm_client::send_to_llama;
+use log::{Level, debug, error, info, log_enabled};
 use piper_tts::start_speech_worker;
-use serde_json::json;
 use std::{
     collections::VecDeque,
     sync::{
@@ -65,35 +69,14 @@ fn sanitize_frame(frame: &mut [f32]) {
     }
 }
 
-async fn send_to_llama(text: String) -> Result<(), reqwest::Error> {
-    let client = reqwest::Client::new();
-
-    // llama.cpp server usually runs on 8080, Ollama on 11434
-    let url = "http://localhost:8080/completion";
-
-    let body = json!({
-        "prompt": format!("\n\n### User: {}\n### Assistant:", text),
-        "n_predict": 128,
-        "stream": false
-    });
-
-    let res = client.post(url).json(&body).send().await?;
-
-    if res.status().is_success() {
-        let response_data: serde_json::Value = res.json().await?;
-
-        // Extract the actual string
-        if let Some(llama_text) = response_data["content"].as_str() {
-            // Send text to Piper here
-            println!("🦙 Llama says: {}", llama_text);
-        }
-    }
-
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize the logger (usually the first line in main)
+    env_logger::init();
+
+    // Init the chat history
+    let mut history = ChatHistory::new("You are a helpful assistant.", 30);
+
     // Create a whisper channel
     let (tx_whisper, rx_whisper) = std_mpsc::channel::<Vec<f32>>();
     let (tx_speaker, rx_speaker) = std_mpsc::channel::<String>();
@@ -104,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
     tx_speaker
         .send("Hello, I'm ready to chat.".to_string())
         .ok();
+    let ctx_speaker = tx_speaker.clone();
 
     // Run whisper in a thread so we don't block the audio loop
     std::thread::spawn(move || {
@@ -137,16 +121,21 @@ async fn main() -> anyhow::Result<()> {
                     transcript.push_str(text.trim());
                 }
             }
-            println!("\n[Whisper]: {}", transcript);
-            tx_speaker.send(transcript.clone()).ok();
+            debug!("Voice transcription: {}", transcript);
+            history.add_message("user", &transcript);
 
-            // Fire and forget to the Llama server
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(send_to_llama(transcript));
-            match result {
-                Ok(()) => println!("Transcription sent."),
+            match rt.block_on(send_to_llama(history.get_payload())) {
+                Ok(message) => {
+                    debug!("🦙 Llama says: {}", message);
+                    history.add_message("user", &message);
+                    ctx_speaker.send(message).ok();
+                }
                 Err(e) => {
-                    eprintln!("Something went wrong: {:?}", e);
+                    error!("Something went wrong: {:?}", e);
+                    ctx_speaker
+                        .send("My brain seems to be disconnected or something.".to_string())
+                        .ok();
                 }
             }
         }
@@ -182,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
     //let config = device.default_input_config()?;
     let config: cpal::StreamConfig = supported_config.into();
     let sample_rate = config.sample_rate;
-    println!("Listening at {}Hz...", sample_rate);
+    info!("Listening at {}Hz...", sample_rate);
 
     // Channel to send audio from the hardware thread to our logic thread
     let (tx_hw, mut rx_hw) = mpsc::channel::<Vec<f32>>(100);
@@ -192,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
         move |data: &[f32], _: &_| {
             let _ = tx_hw.blocking_send(data.to_vec());
         },
-        |err| eprintln!("Mic error: {}", err),
+        |err| error!("Mic error: {}", err),
         None,
     )?;
 
@@ -239,23 +228,25 @@ async fn main() -> anyhow::Result<()> {
 
             let score = detector.predict_f32(&frame_f32);
 
-            // Print peaks every 4 frames
-            frame_count += 1;
-            if frame_count & 3 == 0 {
-                let peak = frame_f32.iter().map(|s| s.abs()).fold(0.0, f32::max);
-                let bar_len = (peak * 50.0) as usize; // Map 0.0-1.0 to 0-50 chars
-                let bar = "█".repeat(bar_len.min(50));
+            if log_enabled!(Level::Debug) {
+                // Print peaks every 4 frames
+                frame_count += 1;
+                if frame_count & 3 == 0 {
+                    let peak = frame_f32.iter().map(|s| s.abs()).fold(0.0, f32::max);
+                    let bar_len = (peak * 50.0) as usize; // Map 0.0-1.0 to 0-50 chars
+                    let bar = "█".repeat(bar_len.min(50));
 
-                let threshold = if is_recording {
-                    MIN_SCORE_RECORDING
-                } else {
-                    MIN_SCORE_WAKE
-                };
-                print!("\rVol: [{:<50}] Score: {:.2}, {:.2}", bar, score, threshold);
-                use std::io::{self, Write};
-                io::stdout().flush().unwrap();
+                    let threshold = if is_recording {
+                        MIN_SCORE_RECORDING
+                    } else {
+                        MIN_SCORE_WAKE
+                    };
+                    print!("\rVol: [{:<50}] Score: {:.2}, {:.2}", bar, score, threshold);
+                    use std::io::{self, Write};
+                    io::stdout().flush().unwrap();
 
-                frame_count = 0;
+                    frame_count = 0;
+                }
             }
 
             if !is_recording {
@@ -263,8 +254,8 @@ async fn main() -> anyhow::Result<()> {
                 let zcr = calculate_zcr(&frame_f32);
 
                 if score > MIN_SCORE_WAKE && rms > 0.00 && zcr < 60 {
-                    println!("🔥 VOICE DETECTED! (Score: {:.2})", score);
-                    println!("🎤 Starting new recording...");
+                    debug!("🔥 VOICE DETECTED! (Score: {:.2})", score);
+                    debug!("🎤 Starting new recording...");
                     is_recording = true;
                     recording_buffer.extend(pre_roll.drain(..))
                 }
@@ -280,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // After 1 sec of silence or up to 25 secs of talking
                 if silence_frames >= MAX_SILENCE_FRAMES || recording_buffer.len() > 400000 {
-                    println!(
+                    debug!(
                         "✅ Phrase complete. Total samples: {}",
                         recording_buffer.len()
                     );
@@ -288,7 +279,9 @@ async fn main() -> anyhow::Result<()> {
                     // Send to whisper at least 1 second of audio
                     if recording_buffer.len() > 16000 {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
-
+                        tx_speaker
+                            .send("Interesting. Please wait.".to_string())
+                            .ok();
                         tx_whisper.send(audio_to_process).ok();
                     }
 
