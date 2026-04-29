@@ -1,11 +1,10 @@
 mod chat_history;
-mod llm_client;
 mod piper_tts;
+mod stream_client;
 
 use chat_history::ChatHistory;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
-use llm_client::send_to_llama;
 use log::{Level, debug, error, info, log_enabled};
 use piper_tts::start_speech_worker;
 use std::{
@@ -16,6 +15,7 @@ use std::{
         mpsc as std_mpsc,
     },
 };
+use stream_client::get_message_stream;
 use tokio::sync::mpsc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
@@ -87,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
     tx_speaker
         .send("Hello, I'm ready to chat.".to_string())
         .ok();
+
     let ctx_speaker = tx_speaker.clone();
 
     // Run whisper in a thread so we don't block the audio loop
@@ -122,18 +123,14 @@ async fn main() -> anyhow::Result<()> {
             history.add_message("user", &transcript);
 
             let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(send_to_llama(history.get_payload())) {
-                Ok(message) => {
-                    debug!("🦙 Llama says: {}", message);
-                    history.add_message("user", &message);
-                    ctx_speaker.send(message).ok();
-                }
-                Err(e) => {
-                    error!("Something went wrong: {:?}", e);
-                    ctx_speaker
-                        .send("My brain seems to be disconnected or something.".to_string())
-                        .ok();
-                }
+            if let Err(e) = rt.block_on(get_message_stream(
+                history.get_payload(),
+                ctx_speaker.clone(),
+            )) {
+                error!("{:?}", e);
+                ctx_speaker
+                    .send("My brain seems to be disconnected or something.".to_string())
+                    .ok();
             }
         }
     });
