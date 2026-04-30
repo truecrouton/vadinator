@@ -5,6 +5,7 @@ use log::error;
 use reqwest::Client;
 use serde_json::Value;
 use serde_json::json;
+use std::env;
 use std::sync::mpsc::Sender;
 use tokio::time::{Duration, timeout};
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -18,11 +19,10 @@ pub async fn get_message_stream(
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    // llama.cpp server usually runs on 8080, Ollama on 11434
-    let url = "http://localhost:8080/v1/chat/completions";
+    let url =
+        env::var("SERVER_URL").expect("Missing: SERVER_URL not set in your vadinator.env file.");
 
     let body = json!({
-        //"prompt": format!("\n\n### User: {}\n### Assistant:", text),
         "messages": payload,
         "stream": true
     });
@@ -44,7 +44,7 @@ pub async fn get_message_stream(
                 .ok();
         } else {
             speaker_tx
-                .send("I think your request is somehow going to make my brain puke.".to_string())
+                .send("I can't respond to your request.".to_string())
                 .ok();
         }
 
@@ -92,7 +92,7 @@ pub async fn get_message_stream(
                             let remaining = current_phrase.split_off(split_at);
                             let completed_phrase = current_phrase; // 'buffer' now only contains the sentence
 
-                            debug!("Completed phrase: {}", completed_phrase.trim());
+                            debug!("🤖 Speaking: {}", completed_phrase.trim());
                             speaker_tx.send(completed_phrase).ok();
 
                             // Put the leftover part back into the buffer for the next token
@@ -119,6 +119,6 @@ pub async fn get_message_stream(
         current_phrase.clear();
     }
 
-    debug!("Stream finished.");
+    debug!("🏁 Stream finished.");
     Ok(())
 }

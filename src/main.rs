@@ -9,6 +9,8 @@ use log::{Level, debug, error, info, log_enabled};
 use piper_tts::start_speech_worker;
 use std::{
     collections::VecDeque,
+    env,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -71,7 +73,7 @@ fn sanitize_frame(frame: &mut [f32]) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize the logger (usually the first line in main)
+    dotenvy::from_filename("vadinator.env").ok();
     env_logger::init();
 
     // Init the chat history
@@ -92,9 +94,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Run whisper in a thread so we don't block the audio loop
     std::thread::spawn(move || {
+        let base_path = PathBuf::from("./models");
+        let model_file = env::var("WHISPER_MODEL")
+            .expect("Missing: WHISPER_MODEL not set in your vadinator.env file.");
+        let model_path = base_path.join(model_file);
+
         // Load Whisper inside the thread
-        let ctx =
-            WhisperContext::new_with_params("./models/small.en.bin", Default::default()).unwrap();
+        let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
         let mut state = ctx.create_state().unwrap();
 
         // The thread sits here and waits for audio data
@@ -120,6 +126,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             debug!("Voice transcription: {}", transcript);
+            if transcript.trim() == "[BLANK_AUDIO]" {
+                continue;
+            }
+
             history.add_message("user", &transcript);
 
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -190,9 +200,18 @@ async fn main() -> anyhow::Result<()> {
     let mut frame_count = 0;
 
     // 1.0 seconds of silence = (16000 samples / 256 samples per frame) ≈ 62 frames
-    const MAX_SILENCE_FRAMES: usize = 62;
-    const MIN_SCORE_RECORDING: f32 = 0.5;
-    const MIN_SCORE_WAKE: f32 = 0.8;
+    let max_silence_frames: usize = env::var("MAX_SILENCE_FRAMES")
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(62); // Default 
+    let min_score_recording: f32 = env::var("MIN_SCORE_RECORDING")
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(0.5); // Default
+    let min_score_wake: f32 = env::var("MIN_SCORE_WAKE")
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(0.8); // Default
 
     while let Some(chunk) = rx_hw.recv().await {
         // If the bot is talking, just throw this audio in the trash
@@ -231,9 +250,9 @@ async fn main() -> anyhow::Result<()> {
                     let bar = "█".repeat(bar_len.min(50));
 
                     let threshold = if is_recording {
-                        MIN_SCORE_RECORDING
+                        min_score_recording
                     } else {
-                        MIN_SCORE_WAKE
+                        min_score_wake
                     };
                     print!("\rVol: [{:<50}] Score: {:.2}, {:.2}", bar, score, threshold);
                     use std::io::{self, Write};
@@ -247,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
                 let rms = calculate_rms(&frame_f32);
                 let zcr = calculate_zcr(&frame_f32);
 
-                if score > MIN_SCORE_WAKE && rms > 0.00 && zcr < 60 {
+                if score > min_score_wake && rms > 0.00 && zcr < 60 {
                     debug!("🔥 VOICE DETECTED! (Score: {:.2})", score);
                     debug!("🎤 Starting new recording...");
                     is_recording = true;
@@ -256,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 recording_buffer.extend_from_slice(&frame_f32);
 
-                if score > MIN_SCORE_RECORDING {
+                if score > min_score_recording {
                     // Reset the "Hang Time" timer
                     silence_frames = 0;
                 } else {
@@ -264,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 // After 1 sec of silence or up to 25 secs of talking
-                if silence_frames >= MAX_SILENCE_FRAMES || recording_buffer.len() > 400000 {
+                if silence_frames >= max_silence_frames || recording_buffer.len() > 400000 {
                     debug!(
                         "✅ Phrase complete. Total samples: {}",
                         recording_buffer.len()

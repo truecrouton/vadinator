@@ -2,8 +2,9 @@ use log::{error, info};
 use piper_rs::Piper;
 use rodio::stream::DeviceSinkBuilder;
 use rodio::{Player, buffer::SamplesBuffer};
+use std::env;
 use std::num::{NonZeroU16, NonZeroU32};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -17,8 +18,12 @@ pub fn start_speech_worker(rx: Receiver<String>, is_speaking: Arc<AtomicBool>) {
 
         // Initialize Piper
         // This looks for the .onnx and the .json automatically if you point it to the model file.
-        let config_path = "./models/en_US-hfc_female-medium.onnx.json";
-        let onnx_path = config_path.replace(".onnx.json", ".onnx");
+        let base_path = PathBuf::from("./models");
+        let config_file = env::var("PIPER_MODEL_CONFIG")
+            .expect("Missing: PIPER_MODEL_CONFIG not set in your vadinator.env file.");
+        let onnx_file = config_file.replace(".onnx.json", ".onnx");
+        let config_path = base_path.join(config_file);
+        let onnx_path = base_path.join(onnx_file);
         let speaker_id: Option<i64> = Some(0);
         let mut piper = Piper::new(Path::new(&onnx_path), Path::new(&config_path)).unwrap();
 
