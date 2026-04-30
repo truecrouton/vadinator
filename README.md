@@ -2,9 +2,12 @@
 
 A voice-enabled client for chatting with llms. Includes `earshot` Voice Activity Detection (VAD) to cut down on non-vocal input and runs `whisper` locally for speech-to-text. Is intended to be *very* lightweight. Uses `v1/chat/completions/` API to work with different inference servers.
 
+This project and this README is a work in progress.
+
+## Getting Started
 You'll need to download the `whisper` (e.g., `en_US-hfc_female-medium.onnx`) and `piper` (e.g., `base.en.bin`) models and put these in the `./models` directory.
 
-This project and this README is a work in progress.
+Then, setup your `vadinator.env` file. You can copy `vadinator.env.sample` as a starting point.
 
 ## Acknowledgements
 
