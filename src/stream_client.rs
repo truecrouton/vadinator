@@ -5,7 +5,6 @@ use log::error;
 use reqwest::Client;
 use serde_json::Value;
 use serde_json::json;
-use std::io::Write;
 use std::sync::mpsc::Sender;
 use tokio::time::{Duration, timeout};
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -62,45 +61,54 @@ pub async fn get_message_stream(
     // Use LinesCodec to automatically buffer and split by \n
     let mut lines = FramedRead::new(sync_wrapper, LinesCodec::new());
 
-    println!("Assistant: ");
-
     let mut current_phrase = String::new();
     let delimiters = ['.', '!', '?'];
 
-    while let Ok(Some(line)) = timeout(Duration::from_secs(3), lines.next()).await {
-        let line = line?;
-        let line = line.trim();
+    while let Some(l) = lines.next().await {
+        match timeout(Duration::from_secs(3), std::future::ready(l)).await {
+            Ok(line) => {
+                let line = line?;
+                let line = line.trim();
 
-        if line.is_empty() || !line.starts_with("data: ") {
-            continue;
-        }
-
-        let data = &line[6..];
-
-        if data == "[DONE]" {
-            break;
-        }
-
-        if let Ok(json) = serde_json::from_str::<Value>(data) {
-            if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                current_phrase.push_str(content);
-
-                print!("{}", content);
-                std::io::stdout().flush()?;
-
-                if let Some(index) = current_phrase.find(|c: char| delimiters.contains(&c)) {
-                    let split_at = index + 1;
-
-                    // Take the finished sentence out of the buffer
-                    let remaining = current_phrase.split_off(split_at);
-                    let completed_phrase = current_phrase; // 'buffer' now only contains the sentence
-
-                    debug!("Completed phrase: {}", completed_phrase.trim());
-                    speaker_tx.send(completed_phrase).ok();
-
-                    // Put the leftover part back into the buffer for the next token
-                    current_phrase = remaining;
+                if line.is_empty() || !line.starts_with("data: ") {
+                    continue;
                 }
+
+                let data = &line[6..];
+
+                if data == "[DONE]" {
+                    break;
+                }
+
+                if let Ok(json) = serde_json::from_str::<Value>(data) {
+                    if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                        current_phrase.push_str(content);
+
+                        if let Some(index) = current_phrase.find(|c: char| delimiters.contains(&c))
+                        {
+                            let split_at = index + 1;
+
+                            // Take the finished sentence out of the buffer
+                            let remaining = current_phrase.split_off(split_at);
+                            let completed_phrase = current_phrase; // 'buffer' now only contains the sentence
+
+                            debug!("Completed phrase: {}", completed_phrase.trim());
+                            speaker_tx.send(completed_phrase).ok();
+
+                            // Put the leftover part back into the buffer for the next token
+                            current_phrase = remaining;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                speaker_tx
+                    .send(
+                        "Sorry, I think my brain stopped working in the middle of this thought."
+                            .to_string(),
+                    )
+                    .ok();
+                return Err(e.into());
             }
         }
     }
@@ -111,6 +119,6 @@ pub async fn get_message_stream(
         current_phrase.clear();
     }
 
-    println!("\n\nStream finished.");
+    debug!("Stream finished.");
     Ok(())
 }

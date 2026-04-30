@@ -31,8 +31,11 @@ pub fn start_speech_worker(rx: Receiver<String>, is_speaking: Arc<AtomicBool>) {
                 continue;
             }
 
+            let filtered_text: String = text.chars().filter(|&c| c != '*').collect();
+
             match piper.create(
-                &text, false,      // raw? false
+                &filtered_text,
+                false,      // raw? false
                 speaker_id, // speaker index
                 None,       // length_scale (speed)
                 None,       // noise_scale
