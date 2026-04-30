@@ -133,14 +133,19 @@ async fn main() -> anyhow::Result<()> {
             history.add_message("user", &transcript);
 
             let rt = tokio::runtime::Runtime::new().unwrap();
-            if let Err(e) = rt.block_on(get_message_stream(
+            match rt.block_on(get_message_stream(
                 history.get_payload(),
                 ctx_speaker.clone(),
             )) {
-                error!("{:?}", e);
-                ctx_speaker
-                    .send("My brain seems to be disconnected or something.".to_string())
-                    .ok();
+                Ok(message) => {
+                    history.add_message("assistant", &message);
+                }
+                Err(e) => {
+                    error!("{:?}", e);
+                    ctx_speaker
+                        .send("My brain seems to be disconnected or something.".to_string())
+                        .ok();
+                }
             }
         }
     });

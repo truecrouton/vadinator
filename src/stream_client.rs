@@ -13,7 +13,7 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 pub async fn get_message_stream(
     payload: Vec<PayloadMessage>,
     speaker_tx: Sender<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     let client = Client::builder()
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(300))
@@ -61,6 +61,7 @@ pub async fn get_message_stream(
     // Use LinesCodec to automatically buffer and split by \n
     let mut lines = FramedRead::new(sync_wrapper, LinesCodec::new());
 
+    let mut full_response = String::new();
     let mut current_phrase = String::new();
     let delimiters = ['.', '!', '?'];
 
@@ -82,6 +83,7 @@ pub async fn get_message_stream(
 
                 if let Ok(json) = serde_json::from_str::<Value>(data) {
                     if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                        full_response.push_str(content);
                         current_phrase.push_str(content);
 
                         if let Some(index) = current_phrase.find(|c: char| delimiters.contains(&c))
@@ -120,5 +122,5 @@ pub async fn get_message_stream(
     }
 
     debug!("🏁 Stream finished.");
-    Ok(())
+    Ok(full_response)
 }

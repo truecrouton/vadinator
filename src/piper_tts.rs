@@ -36,7 +36,11 @@ pub fn start_speech_worker(rx: Receiver<String>, is_speaking: Arc<AtomicBool>) {
                 continue;
             }
 
-            let filtered_text: String = text.chars().filter(|&c| c != '*').collect();
+            let ignored_chars = ['*', '#'];
+            let filtered_text: String = text
+                .chars()
+                .filter(|&c| !ignored_chars.contains(&c))
+                .collect();
 
             match piper.create(
                 &filtered_text,
