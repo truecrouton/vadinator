@@ -1,142 +1,42 @@
 mod audio_proc;
 mod break_in;
 mod chat_history;
+mod conversation;
 mod piper_tts;
-mod stream_client;
 
 use audio_proc::{apply_high_pass, calculate_rms, calculate_zcr, sanitize_frame};
-use chat_history::ChatHistory;
+use conversation::ConversationEngine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
 use log::{Level, debug, error, info, log_enabled};
-use std::{
-    collections::VecDeque,
-    env,
-    path::PathBuf,
-    sync::{Arc, mpsc as std_mpsc},
-};
-use stream_client::get_message_stream;
+use std::{collections::VecDeque, env, path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+use whisper_rs::WhisperContext;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::from_filename("vadinator.env").ok();
     env_logger::init();
 
-    // Init the chat history
-    let mut history = ChatHistory::new(
-        "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.",
-        30,
-    );
-
-    // Create a whisper channel
-    let (tx_whisper, rx_whisper) = std_mpsc::channel::<Vec<f32>>();
-
+    // Load speech audio engine
     let ae = Arc::new(piper_tts::AudioEngine::new());
-    let ctx_speaker = ae.tx.clone();
 
-    ae.tx.send("Hello, I'm ready to chat.".to_string()).ok();
-
+    // Load Whisper and break-in monitoring threads
     let base_path = PathBuf::from("./models");
     let model_file = env::var("WHISPER_MODEL")
         .expect("Missing: WHISPER_MODEL not set in your vadinator.env file.");
     let model_path = base_path.join(model_file);
 
-    // Load Whisper inside the thread
     let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
     let shared_ctx = Arc::new(ctx);
-
-    // Run whisper in a thread so we don't block the audio loop
-    let whisper_ctx: Arc<WhisperContext> = shared_ctx.clone();
-    std::thread::spawn(move || {
-        let mut state = whisper_ctx.create_state().unwrap();
-
-        // The thread sits here and waits for audio data
-        while let Ok(audio_data) = rx_whisper.recv() {
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-
-            // Disable the "Standard" Whisper chatter
-            params.set_print_special(false);
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-            params.set_suppress_blank(true);
-
-            state
-                .full(params, &audio_data[..])
-                .expect("Transcription failed");
-
-            let mut transcript = String::new();
-            for segment in state.as_iter() {
-                if let Ok(text) = segment.to_str() {
-                    transcript.push(' ');
-                    transcript.push_str(text.trim());
-                }
-            }
-            debug!("Voice transcription: {}", transcript);
-            if transcript.trim() == "[BLANK_AUDIO]" {
-                continue;
-            }
-
-            history.add_message("user", &transcript);
-
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(get_message_stream(
-                history.get_payload(),
-                ctx_speaker.clone(),
-            )) {
-                Ok(message) => {
-                    history.add_message("assistant", &message);
-                }
-                Err(e) => {
-                    error!("{:?}", e);
-                    ctx_speaker
-                        .send("My brain seems to be disconnected or something.".to_string())
-                        .ok();
-                }
-            }
-        }
-    });
-
     let tx_break_in = break_in::start_break_in_worker(shared_ctx.clone(), ae.clone());
 
-    /*
-       let break_in_ctx: Arc<WhisperContext> = shared_ctx.clone();
-       let ae_clone = ae.clone();
-       std::thread::spawn(move || {
-           let mut break_in_state = break_in_ctx.create_state().unwrap();
-           while let Ok(audio_data) = rx_break_in.recv() {
-               let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    // Load conversation engine
+    let system_prompt = "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.";
+    let ce = ConversationEngine::new(shared_ctx.clone(), ae.clone(), system_prompt);
 
-               // Disable the "Standard" Whisper chatter
-               params.set_print_special(false);
-               params.set_print_progress(false);
-               params.set_print_realtime(false);
-               params.set_print_timestamps(false);
-               params.set_suppress_blank(true);
-
-               break_in_state
-                   .full(params, &audio_data[..])
-                   .expect("Break-in transcription failed");
-
-               let mut transcript = String::new();
-               for segment in break_in_state.as_iter() {
-                   if let Ok(text) = segment.to_str() {
-                       transcript.push(' ');
-                       transcript.push_str(text.trim());
-                   }
-               }
-               debug!("Break-in transcription: {}", transcript);
-
-               if transcript.to_lowercase().contains("stop") {
-                   debug!("🛑: {}", transcript);
-
-                   ae_clone.stop_audio();
-               }
-           }
-       });
-    */
+    // Say hello
+    ae.tx.send("Hello, I'm ready to chat.".to_string()).ok();
 
     // Initialize the VAD "Detector"
     // Earshot is stateful, so it remembers the "noise" in your room.
@@ -297,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
                     if recording_buffer.len() > 16000 {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
                         ae.tx.send("Interesting. Please wait.".to_string()).ok();
-                        tx_whisper.send(audio_to_process).ok();
+                        ce.tx.send(audio_to_process).ok();
                     }
 
                     // Reset everything for the next phrase
