@@ -1,5 +1,5 @@
+use crate::audio_out::AudioEngine;
 use crate::chat_history::{ChatHistory, Message};
-use crate::piper_tts::AudioEngine;
 use futures_util::StreamExt;
 use log::{debug, error};
 use reqwest::Client;

@@ -85,11 +85,11 @@ impl AudioEngine {
     }
 
     pub fn is_active(&self) -> bool {
+        // Paused is just waiting for data - not the same as stop
         !self.player.is_paused() && !self.player.empty()
-    }
 
-    pub fn is_silent(&self) -> bool {
-        self.player.is_paused() || self.player.empty()
+        // To determine if silent
+        // self.player.is_paused() || self.player.empty()
     }
 
     pub fn stop_audio(&self) {

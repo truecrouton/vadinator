@@ -1,4 +1,4 @@
-use crate::piper_tts::AudioEngine;
+use crate::audio_out::AudioEngine;
 use log::debug;
 use std::sync::{
     Arc,

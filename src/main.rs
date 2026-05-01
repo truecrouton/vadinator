@@ -1,11 +1,11 @@
+mod audio_out;
 mod audio_proc;
 mod break_in;
 mod chat_history;
-mod conversation;
-mod piper_tts;
+mod conv_engine;
 
 use audio_proc::{apply_high_pass, calculate_rms, calculate_zcr, sanitize_frame};
-use conversation::ConversationEngine;
+use conv_engine::ConversationEngine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
 use log::{Level, debug, error, info, log_enabled};
@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     // Load speech audio engine
-    let ae = Arc::new(piper_tts::AudioEngine::new());
+    let ae = Arc::new(audio_out::AudioEngine::new());
 
     // Load Whisper and break-in monitoring threads
     let base_path = PathBuf::from("./models");
