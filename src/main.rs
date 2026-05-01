@@ -1,75 +1,23 @@
+mod audio_proc;
+mod break_in;
 mod chat_history;
 mod piper_tts;
 mod stream_client;
 
+use audio_proc::{apply_high_pass, calculate_rms, calculate_zcr, sanitize_frame};
 use chat_history::ChatHistory;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
 use log::{Level, debug, error, info, log_enabled};
-use piper_tts::start_speech_worker;
 use std::{
     collections::VecDeque,
     env,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc as std_mpsc,
-    },
+    sync::{Arc, mpsc as std_mpsc},
 };
 use stream_client::get_message_stream;
 use tokio::sync::mpsc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
-
-/// Calculates the Zero Crossing Rate.
-/// High ZCR (>60) usually indicates white noise, clicks, or "pops".
-/// In a 256-sample frame (16ms) @ 16kHz:
-/// - Speech usually has 10–40 crossings.
-/// - Static/Pops/Clicks usually have >60 crossings.
-fn calculate_zcr(frame: &[f32]) -> usize {
-    frame
-        .windows(2)
-        .filter(|win| (win[0] >= 0.0 && win[1] < 0.0) || (win[0] < 0.0 && win[1] >= 0.0))
-        .count()
-}
-
-/// Calculates the Root Mean Square (Volume).
-/// Use this as a "Noise Gate" to ignore the floor hum.
-fn calculate_rms(frame: &[f32]) -> f32 {
-    let sq_sum: f32 = frame.iter().map(|&s| s * s).sum();
-    (sq_sum / frame.len() as f32).sqrt()
-}
-
-/// High-pass filter
-/// Higher Alpha (0.99): More low-end is kept, but it's more likely to overshoot
-/// Lower Alpha (0.80): More low-end is cut (thinner sound), but it's much more stable.
-fn apply_high_pass(frame: &mut [f32], state: &mut f32, alpha: f32) {
-    for sample in frame.iter_mut() {
-        let current = *sample;
-
-        // High-pass math: y[n] = x[n] - x[n-1] + alpha * y[n-1]
-        let filtered = current - *state;
-        *state = current;
-
-        // Clamp the result to keep things from panicking
-        *sample = (filtered * alpha).clamp(-1.0, 1.0);
-    }
-}
-
-/// Clamps and sanitizes audio to prevent NN panics.
-/// Sanitization: Ensure NO values exceed 1.0 or -1.0
-/// and handle any weird NaN/Inf values from the driver.
-fn sanitize_frame(frame: &mut [f32]) {
-    for sample in frame.iter_mut() {
-        // 1. Handle NaNs (sometimes happens on mic disconnect)
-        if sample.is_nan() {
-            *sample = 0.0;
-        }
-
-        // 2. Clamp strictly to [-1.0, 1.0]
-        *sample = sample.clamp(-1.0, 1.0);
-    }
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -77,31 +25,32 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     // Init the chat history
-    let mut history = ChatHistory::new("You are a helpful assistant.", 30);
+    let mut history = ChatHistory::new(
+        "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.",
+        30,
+    );
 
     // Create a whisper channel
     let (tx_whisper, rx_whisper) = std_mpsc::channel::<Vec<f32>>();
-    let (tx_speaker, rx_speaker) = std_mpsc::channel::<String>();
-    let is_speaking = Arc::new(AtomicBool::new(false));
 
-    start_speech_worker(rx_speaker, Arc::clone(&is_speaking));
+    let ae = Arc::new(piper_tts::AudioEngine::new());
+    let ctx_speaker = ae.tx.clone();
 
-    tx_speaker
-        .send("Hello, I'm ready to chat.".to_string())
-        .ok();
+    ae.tx.send("Hello, I'm ready to chat.".to_string()).ok();
 
-    let ctx_speaker = tx_speaker.clone();
+    let base_path = PathBuf::from("./models");
+    let model_file = env::var("WHISPER_MODEL")
+        .expect("Missing: WHISPER_MODEL not set in your vadinator.env file.");
+    let model_path = base_path.join(model_file);
+
+    // Load Whisper inside the thread
+    let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
+    let shared_ctx = Arc::new(ctx);
 
     // Run whisper in a thread so we don't block the audio loop
+    let whisper_ctx: Arc<WhisperContext> = shared_ctx.clone();
     std::thread::spawn(move || {
-        let base_path = PathBuf::from("./models");
-        let model_file = env::var("WHISPER_MODEL")
-            .expect("Missing: WHISPER_MODEL not set in your vadinator.env file.");
-        let model_path = base_path.join(model_file);
-
-        // Load Whisper inside the thread
-        let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
-        let mut state = ctx.create_state().unwrap();
+        let mut state = whisper_ctx.create_state().unwrap();
 
         // The thread sits here and waits for audio data
         while let Ok(audio_data) = rx_whisper.recv() {
@@ -150,6 +99,45 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let tx_break_in = break_in::start_break_in_worker(shared_ctx.clone(), ae.clone());
+
+    /*
+       let break_in_ctx: Arc<WhisperContext> = shared_ctx.clone();
+       let ae_clone = ae.clone();
+       std::thread::spawn(move || {
+           let mut break_in_state = break_in_ctx.create_state().unwrap();
+           while let Ok(audio_data) = rx_break_in.recv() {
+               let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+
+               // Disable the "Standard" Whisper chatter
+               params.set_print_special(false);
+               params.set_print_progress(false);
+               params.set_print_realtime(false);
+               params.set_print_timestamps(false);
+               params.set_suppress_blank(true);
+
+               break_in_state
+                   .full(params, &audio_data[..])
+                   .expect("Break-in transcription failed");
+
+               let mut transcript = String::new();
+               for segment in break_in_state.as_iter() {
+                   if let Ok(text) = segment.to_str() {
+                       transcript.push(' ');
+                       transcript.push_str(text.trim());
+                   }
+               }
+               debug!("Break-in transcription: {}", transcript);
+
+               if transcript.to_lowercase().contains("stop") {
+                   debug!("🛑: {}", transcript);
+
+                   ae_clone.stop_audio();
+               }
+           }
+       });
+    */
+
     // Initialize the VAD "Detector"
     // Earshot is stateful, so it remembers the "noise" in your room.
     let mut detector = Detector::default();
@@ -196,11 +184,14 @@ async fn main() -> anyhow::Result<()> {
 
     stream.play()?;
 
+    const PRE_ROLL_SIZE: usize = 32000;
+
     let mut recording_buffer: Vec<f32> = Vec::new();
     let mut is_recording = false;
     let mut silence_frames = 0;
+    let mut break_in_counter = 0;
     let mut audio_buffer = Vec::new();
-    let mut pre_roll = VecDeque::with_capacity(8000);
+    let mut pre_roll = VecDeque::with_capacity(PRE_ROLL_SIZE);
     let mut high_pass_state = 0.0;
     let mut frame_count = 0;
 
@@ -219,14 +210,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(0.8); // Default
 
     while let Some(chunk) = rx_hw.recv().await {
-        // If the bot is talking, just throw this audio in the trash
-        if is_speaking.load(Ordering::SeqCst) {
-            continue;
-        }
-
         // Decimate: 48,000 / 3 = 16,000
         let decimated: Vec<f32> = chunk.iter().step_by(3).cloned().collect();
-
         audio_buffer.extend(decimated);
 
         // Earshot strictly requires exactly 256 samples
@@ -237,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
             // ALWAYS add the current frame to pre-roll
             pre_roll.extend(frame_f32.iter().cloned());
             // If pre-roll is too long, drop the oldest samples
-            while pre_roll.len() > 8000 {
+            while pre_roll.len() > PRE_ROLL_SIZE {
                 pre_roll.pop_front();
             }
 
@@ -267,6 +252,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
+            if ae.is_active() {
+                break_in_counter += 1;
+                if break_in_counter >= 31 && score > 0.8 {
+                    let break_in_audio = std::mem::take(&mut pre_roll);
+                    tx_break_in.send(break_in_audio.into()).ok();
+
+                    break_in_counter = 0;
+                }
+                continue;
+            }
+
             if !is_recording {
                 let rms = calculate_rms(&frame_f32);
                 let zcr = calculate_zcr(&frame_f32);
@@ -275,7 +271,10 @@ async fn main() -> anyhow::Result<()> {
                     debug!("🔥 VOICE DETECTED! (Score: {:.2})", score);
                     debug!("🎤 Starting new recording...");
                     is_recording = true;
-                    recording_buffer.extend(pre_roll.drain(..))
+
+                    // Drain last .5 second of audio as pre-fill
+                    let start_idx = pre_roll.len().saturating_sub(8000);
+                    recording_buffer.extend(pre_roll.drain(start_idx..));
                 }
             } else {
                 recording_buffer.extend_from_slice(&frame_f32);
@@ -297,9 +296,7 @@ async fn main() -> anyhow::Result<()> {
                     // Send to whisper at least 1 second of audio
                     if recording_buffer.len() > 16000 {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
-                        tx_speaker
-                            .send("Interesting. Please wait.".to_string())
-                            .ok();
+                        ae.tx.send("Interesting. Please wait.".to_string()).ok();
                         tx_whisper.send(audio_to_process).ok();
                     }
 
