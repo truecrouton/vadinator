@@ -104,7 +104,7 @@ impl ConversationEngine {
                                 let remaining = current_phrase.split_off(split_at);
                                 let completed_phrase = current_phrase; // 'buffer' now only contains the sentence
 
-                                debug!("🤖 Speaking: {}", completed_phrase.trim());
+                                debug!("🤖 Stream: {}", completed_phrase.trim());
                                 speaker_tx.send(completed_phrase).ok();
 
                                 // Put the leftover part back into the buffer for the next token
@@ -164,7 +164,7 @@ impl ConversationEngine {
                         transcript.push_str(text.trim());
                     }
                 }
-                debug!("Voice transcription: {}", transcript);
+                debug!("📣 Voice transcription: {}", transcript);
                 if transcript.trim() == "[BLANK_AUDIO]" {
                     continue;
                 }

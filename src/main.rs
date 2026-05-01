@@ -9,6 +9,7 @@ use conversation::ConversationEngine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use earshot::Detector;
 use log::{Level, debug, error, info, log_enabled};
+use std::io::{self, Write};
 use std::{collections::VecDeque, env, path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
 use whisper_rs::WhisperContext;
@@ -27,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
         .expect("Missing: WHISPER_MODEL not set in your vadinator.env file.");
     let model_path = base_path.join(model_file);
 
+    whisper_rs::install_logging_hooks();
     let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
     let shared_ctx = Arc::new(ctx);
     let tx_break_in = break_in::start_break_in_worker(shared_ctx.clone(), ae.clone());
@@ -136,16 +138,16 @@ async fn main() -> anyhow::Result<()> {
                 frame_count += 1;
                 if frame_count & 3 == 0 {
                     let peak = frame_f32.iter().map(|s| s.abs()).fold(0.0, f32::max);
-                    let bar_len = (peak * 50.0) as usize; // Map 0.0-1.0 to 0-50 chars
-                    let bar = "█".repeat(bar_len.min(50));
+                    let bar_len = (peak * 30.0) as usize; // Map 0.0-1.0 to 0-30 chars
+                    let bar = "█".repeat(bar_len.min(30));
 
                     let threshold = if is_recording {
                         min_score_recording
                     } else {
                         min_score_wake
                     };
-                    print!("\rVol: [{:<50}] Score: {:.2}, {:.2}", bar, score, threshold);
-                    use std::io::{self, Write};
+                    print!("Vol: [{:<30}] {:.2} {:.2}", bar, score, threshold);
+                    print!("\r");
                     io::stdout().flush().unwrap();
 
                     frame_count = 0;
