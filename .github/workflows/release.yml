@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config cmake build-essential clang
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev pkg-config cmake build-essential clang
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
