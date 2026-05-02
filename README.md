@@ -4,10 +4,21 @@ A voice-enabled client for chatting with llms. Includes `earshot` Voice Activity
 
 This project and this README is a work in progress.
 
+Since it tries to detect break-in words like "Stop!" it may run slowly, depending on your machine, if not built with `--release`, especially if your inference server is on the same machine.
+
 ## Getting Started
 You'll need to download the `whisper` (e.g., `en_US-hfc_female-medium.onnx`) and `piper` (e.g., `base.en.bin`) models and put these in the `./models` directory.
 
 Then, setup your `vadinator.env` file. You can copy `vadinator.env.sample` as a starting point.
+
+## Linux
+If you have audio issues on linux you may need to check the default audio device. For example, running `aplay -L` should shoud a `default` device without `CARD=` and if it is then it's trying to use the hardware directly. On ubuntu, and probably other distros, you may need to install alsa libraries like `pipewire-alsa`, `alsa-utils`, and `libasound2-plugins`. Once `aplay-L` has a `default` device without `CARD=` in the name it *should* work.
+
+For `espeak-ng` issues try installing `espeak-ng` or just `espeak-ng-data` and let `vadinator` know where the data is, e.g., `export PIPER_ESPEAKNG_DATA_DIRECTORY=[Directory *containing* the espeak-ng-data folder]`.
+
+## Mac and Windows
+
+The release builds *should* just work.
 
 ## Acknowledgements
 
