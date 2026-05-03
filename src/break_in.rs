@@ -1,4 +1,5 @@
 use crate::audio_out::AudioEngine;
+use crate::conv_engine::ConversationEngine;
 use log::debug;
 use std::sync::{
     Arc,
@@ -13,7 +14,11 @@ pub struct BreakInEngine {
 }
 
 impl BreakInEngine {
-    fn new(context: Arc<WhisperContext>, ae: Arc<AudioEngine>) -> Self {
+    pub fn new(
+        context: Arc<WhisperContext>,
+        ae: Arc<AudioEngine>,
+        ce: Arc<ConversationEngine>,
+    ) -> Self {
         let stop_processing = Arc::new(AtomicBool::new(false));
         let (tx, mut rx) = mpsc::channel::<Vec<f32>>(100);
 
@@ -49,7 +54,7 @@ impl BreakInEngine {
 
                 if transcript.to_lowercase().contains("stop") {
                     debug!("🛑: {}", transcript);
-
+                    ce.stop();
                     ae.stop_audio();
                 }
             }
@@ -59,12 +64,6 @@ impl BreakInEngine {
             stop_processing,
             tx,
         }
-    }
-
-    pub fn start(context: Arc<WhisperContext>, ae: Arc<AudioEngine>) -> Self {
-        let bie = Self::new(context, ae);
-
-        bie
     }
 
     pub fn pause(&self) {

@@ -37,11 +37,16 @@ async fn main() -> anyhow::Result<()> {
     whisper_rs::install_logging_hooks();
     let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
     let shared_ctx = Arc::new(ctx);
-    let bie = break_in::BreakInEngine::start(shared_ctx.clone(), ae.clone());
 
     // Load conversation engine
     let system_prompt = "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.";
-    let ce = ConversationEngine::new(shared_ctx.clone(), ae.clone(), system_prompt);
+    let ce = Arc::new(ConversationEngine::new(
+        shared_ctx.clone(),
+        ae.clone(),
+        system_prompt,
+    ));
+
+    let bie = break_in::BreakInEngine::new(shared_ctx.clone(), ae.clone(), ce.clone());
 
     // Say hello
     let _ = ae.tx.send("Hello, I'm ready to chat.".to_string()).await;

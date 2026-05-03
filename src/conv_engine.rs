@@ -7,6 +7,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::env;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Duration, timeout};
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -14,10 +15,12 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 pub struct ConversationEngine {
     pub tx: Sender<Vec<f32>>,
+    stop_processing: Arc<AtomicBool>,
 }
 
 impl ConversationEngine {
     async fn get_message_stream(
+        stop_processing: Arc<AtomicBool>,
         payload: Vec<Message>,
         speaker_tx: Sender<String>,
     ) -> Result<String, Box<dyn std::error::Error>> {
@@ -72,9 +75,14 @@ impl ConversationEngine {
         let mut current_phrase = String::new();
         let delimiters = ['.', '!', '?'];
 
+        stop_processing.store(false, Ordering::Relaxed);
         while let Some(l) = lines.next().await {
             match timeout(Duration::from_secs(3), std::future::ready(l)).await {
                 Ok(line) => {
+                    if stop_processing.load(Ordering::Relaxed) {
+                        break;
+                    }
+
                     let line = line?;
                     let line = line.trim();
 
@@ -136,7 +144,9 @@ impl ConversationEngine {
     pub fn new(context: Arc<WhisperContext>, ae: Arc<AudioEngine>, system_prompt: &str) -> Self {
         let (tx, mut rx) = mpsc::channel::<Vec<f32>>(100);
         let mut history = ChatHistory::new(&system_prompt, 30);
+        let stop_processing = Arc::new(AtomicBool::new(false));
 
+        let stop_processing_clone = stop_processing.clone();
         std::thread::spawn(move || {
             let mut state = context.create_state().unwrap();
 
@@ -171,6 +181,7 @@ impl ConversationEngine {
 
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 match rt.block_on(Self::get_message_stream(
+                    stop_processing_clone.clone(),
                     history.get_payload(),
                     ae.tx.clone(),
                 )) {
@@ -189,6 +200,13 @@ impl ConversationEngine {
             }
         });
 
-        Self { tx }
+        Self {
+            tx,
+            stop_processing,
+        }
+    }
+
+    pub fn stop(&self) {
+        self.stop_processing.store(true, Ordering::Relaxed);
     }
 }
