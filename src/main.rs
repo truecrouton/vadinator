@@ -37,14 +37,14 @@ async fn main() -> anyhow::Result<()> {
     whisper_rs::install_logging_hooks();
     let ctx = WhisperContext::new_with_params(model_path, Default::default()).unwrap();
     let shared_ctx = Arc::new(ctx);
-    let tx_break_in = break_in::start_break_in_worker(shared_ctx.clone(), ae.clone());
+    let bie = break_in::BreakInEngine::start(shared_ctx.clone(), ae.clone());
 
     // Load conversation engine
     let system_prompt = "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.";
     let ce = ConversationEngine::new(shared_ctx.clone(), ae.clone(), system_prompt);
 
     // Say hello
-    ae.tx.send("Hello, I'm ready to chat.".to_string()).ok();
+    let _ = ae.tx.send("Hello, I'm ready to chat.".to_string()).await;
 
     // Initialize the VAD "Detector"
     // Earshot is stateful, so it remembers the "noise" in your room.
@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
 
     stream.play()?;
 
-    const PRE_ROLL_SIZE: usize = 32000;
+    const PRE_ROLL_SIZE: usize = 16000;
 
     let mut recording_buffer: Vec<f32> = Vec::new();
     let mut is_recording = false;
@@ -103,12 +103,13 @@ async fn main() -> anyhow::Result<()> {
     let mut pre_roll = VecDeque::with_capacity(PRE_ROLL_SIZE);
     let mut high_pass_state = 0.0;
     let mut frame_count = 0;
+    let mut pre_roll_pre_fill;
 
     // 1.0 seconds of silence = (16000 samples / 256 samples per frame) ≈ 62 frames
     let max_silence_frames: usize = env::var("MAX_SILENCE_FRAMES")
         .ok()
         .and_then(|val| val.parse().ok())
-        .unwrap_or(62); // Default 
+        .unwrap_or(31); // Default 
     let min_score_recording: f32 = env::var("MIN_SCORE_RECORDING")
         .ok()
         .and_then(|val| val.parse().ok())
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
 
             // ALWAYS add the current frame to pre-roll
             pre_roll.extend(frame_f32.iter().cloned());
+            pre_roll_pre_fill = pre_roll.len() >= PRE_ROLL_SIZE;
             // If pre-roll is too long, drop the oldest samples
             while pre_roll.len() > PRE_ROLL_SIZE {
                 pre_roll.pop_front();
@@ -162,19 +164,24 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if ae.is_active() {
+                bie.resume();
                 silence_counter = 0;
-                break_in_counter += 1;
-                if break_in_counter >= 31 && score > min_score_wake {
-                    let break_in_audio = std::mem::take(&mut pre_roll);
-                    tx_break_in.send(break_in_audio.into()).ok();
+                break_in_counter += pre_roll_pre_fill as i32;
+                // Check for stop word every 0.5 seconds
+                if break_in_counter >= 38 && score > min_score_wake {
+                    let _ = bie.tx.try_send(pre_roll.clone().into());
 
                     break_in_counter = 0;
                 }
                 continue;
-            } else if silence_counter <= 31 {
+            } else {
+                bie.pause();
+                pre_roll.clear();
                 // After speaking delay 0.5 sec before detecting voice
-                silence_counter += 1;
-                continue;
+                if silence_counter <= 31 {
+                    silence_counter += 1;
+                    continue;
+                }
             }
 
             if !is_recording {
@@ -210,8 +217,8 @@ async fn main() -> anyhow::Result<()> {
                     // Send to whisper at least 1 second of audio
                     if recording_buffer.len() > 16000 {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
-                        ae.tx.send("Interesting.".to_string()).ok();
-                        ce.tx.send(audio_to_process).ok();
+                        let _ = ae.tx.send("Interesting.".to_string()).await;
+                        let _ = ce.tx.send(audio_to_process).await;
                     }
 
                     // Reset everything for the next phrase

@@ -7,7 +7,7 @@ This project and this README is a work in progress.
 Since it tries to detect break-in words like "Stop!" it may run slowly, depending on your machine, if not built with `--release`, especially if your inference server is on the same machine.
 
 ## Getting Started
-You'll need to download the `whisper` (e.g., `en_US-hfc_female-medium.onnx`) and `piper` (e.g., `base.en.bin`) models and put these in the `./models` directory.
+You'll need to download the `piper` (e.g., `en_US-hfc_female-medium.onnx`) and `whisper` (e.g., `ggml-tiny.en.bin`) models and put these in the `./models` directory.
 
 Then, setup your `vadinator.env` file. You can copy `vadinator.env.sample` as a starting point.
 

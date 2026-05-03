@@ -6,8 +6,8 @@ use rodio::{Player, buffer::SamplesBuffer};
 use std::env;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
+use tokio::sync::mpsc::{self, Sender};
 
 pub struct AudioEngine {
     pub tx: Sender<String>,
@@ -17,7 +17,7 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, mut rx) = mpsc::channel::<String>(100);
 
         let mixer_sink =
             Arc::new(DeviceSinkBuilder::open_default_sink().expect("Could not open audio device"));
@@ -39,7 +39,7 @@ impl AudioEngine {
 
             info!("🔈 Speech output is ready.");
 
-            while let Ok(text) = rx.recv() {
+            while let Some(text) = rx.blocking_recv() {
                 if text.trim().is_empty() {
                     continue;
                 }

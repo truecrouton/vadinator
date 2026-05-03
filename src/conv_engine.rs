@@ -6,10 +6,8 @@ use reqwest::Client;
 use serde_json::Value;
 use serde_json::json;
 use std::env;
-use std::sync::{
-    Arc,
-    mpsc::{self, Sender},
-};
+use std::sync::Arc;
+use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Duration, timeout};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
@@ -42,7 +40,7 @@ impl ConversationEngine {
             error!("Server status code: {}, url: {}", res.status(), res.url());
 
             if res.status().is_server_error() {
-                speaker_tx
+                let _ = speaker_tx
                     .send(
                         format!(
                             "My brain is crashing. All I see is the number {}.",
@@ -50,11 +48,11 @@ impl ConversationEngine {
                         )
                         .to_string(),
                     )
-                    .ok();
+                    .await;
             } else {
-                speaker_tx
+                let _ = speaker_tx
                     .send("I can't respond to your request.".to_string())
-                    .ok();
+                    .await;
             }
 
             return Err(format!("Server status code: {}, url: {}", res.status(), res.url()).into());
@@ -105,7 +103,7 @@ impl ConversationEngine {
                                 let completed_phrase = current_phrase; // 'buffer' now only contains the sentence
 
                                 debug!("🤖 Stream: {}", completed_phrase.trim());
-                                speaker_tx.send(completed_phrase).ok();
+                                let _ = speaker_tx.send(completed_phrase).await;
 
                                 // Put the leftover part back into the buffer for the next token
                                 current_phrase = remaining;
@@ -114,12 +112,12 @@ impl ConversationEngine {
                     }
                 }
                 Err(e) => {
-                    speaker_tx
+                    let _ = speaker_tx
                     .send(
                         "Sorry, I think my brain stopped working in the middle of this thought."
                             .to_string(),
                     )
-                    .ok();
+                    .await;
                     return Err(e.into());
                 }
             }
@@ -127,7 +125,7 @@ impl ConversationEngine {
 
         if !current_phrase.trim().is_empty() {
             let remaining_content = std::mem::take(&mut current_phrase);
-            speaker_tx.send(remaining_content).ok();
+            let _ = speaker_tx.send(remaining_content).await;
             current_phrase.clear();
         }
 
@@ -136,14 +134,14 @@ impl ConversationEngine {
     }
 
     pub fn new(context: Arc<WhisperContext>, ae: Arc<AudioEngine>, system_prompt: &str) -> Self {
-        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        let (tx, mut rx) = mpsc::channel::<Vec<f32>>(100);
         let mut history = ChatHistory::new(&system_prompt, 30);
 
         std::thread::spawn(move || {
             let mut state = context.create_state().unwrap();
 
             // The thread sits here and waits for audio data
-            while let Ok(audio_data) = rx.recv() {
+            while let Some(audio_data) = rx.blocking_recv() {
                 let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
                 // Disable the "Standard" Whisper chatter
@@ -182,7 +180,9 @@ impl ConversationEngine {
                     Err(e) => {
                         error!("{:?}", e);
                         ae.tx
-                            .send("My brain seems to be disconnected or something.".to_string())
+                            .blocking_send(
+                                "My brain seems to be disconnected or something.".to_string(),
+                            )
                             .ok();
                     }
                 }
