@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let mut is_recording = false;
     let mut silence_frames = 0;
     let mut break_in_counter = 0;
+    let mut silence_counter = 0;
     let mut audio_buffer = Vec::new();
     let mut pre_roll = VecDeque::with_capacity(PRE_ROLL_SIZE);
     let mut high_pass_state = 0.0;
@@ -115,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     let min_score_wake: f32 = env::var("MIN_SCORE_WAKE")
         .ok()
         .and_then(|val| val.parse().ok())
-        .unwrap_or(0.8); // Default
+        .unwrap_or(0.75); // Default
 
     while let Some(chunk) = rx_hw.recv().await {
         // Decimate: 48,000 / 3 = 16,000
@@ -161,13 +162,18 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if ae.is_active() {
+                silence_counter = 0;
                 break_in_counter += 1;
-                if break_in_counter >= 31 && score > 0.8 {
+                if break_in_counter >= 31 && score > min_score_wake {
                     let break_in_audio = std::mem::take(&mut pre_roll);
                     tx_break_in.send(break_in_audio.into()).ok();
 
                     break_in_counter = 0;
                 }
+                continue;
+            } else if silence_counter <= 31 {
+                // After speaking delay 0.5 sec before detecting voice
+                silence_counter += 1;
                 continue;
             }
 
@@ -175,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
                 let rms = calculate_rms(&frame_f32);
                 let zcr = calculate_zcr(&frame_f32);
 
-                if score > min_score_wake && rms > 0.00 && zcr < 60 {
+                if score > min_score_wake && rms > 0.02 && zcr < 60 {
                     debug!("🔥 VOICE DETECTED! (Score: {:.2})", score);
                     debug!("🎤 Starting new recording...");
                     is_recording = true;
@@ -204,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
                     // Send to whisper at least 1 second of audio
                     if recording_buffer.len() > 16000 {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
-                        ae.tx.send("Interesting. Please wait.".to_string()).ok();
+                        ae.tx.send("Interesting.".to_string()).ok();
                         ce.tx.send(audio_to_process).ok();
                     }
 
