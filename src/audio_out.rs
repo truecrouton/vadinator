@@ -7,17 +7,20 @@ use std::env;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::{self, Sender};
 
 pub struct AudioEngine {
     pub tx: Sender<String>,
     player: Arc<Player>,
     _mixer_sink: Arc<MixerDeviceSink>, // Hold this or no audio output
+    is_stopped: Arc<AtomicBool>,
 }
 
 impl AudioEngine {
     pub fn new() -> Self {
         let (tx, mut rx) = mpsc::channel::<String>(100);
+        let is_stopped = Arc::new(AtomicBool::new(false));
 
         let mixer_sink =
             Arc::new(DeviceSinkBuilder::open_default_sink().expect("Could not open audio device"));
@@ -25,6 +28,7 @@ impl AudioEngine {
         let player = Arc::new(Player::connect_new(mixer_sink.mixer()));
         let player_clone = player.clone();
 
+        let is_stopped_clone = is_stopped.clone();
         std::thread::spawn(move || {
             // Initialize Piper
             // This looks for the .onnx and the .json automatically if you point it to the model file.
@@ -40,6 +44,12 @@ impl AudioEngine {
             info!("🔈 Speech output is ready.");
 
             while let Some(text) = rx.blocking_recv() {
+                if is_stopped_clone.load(Ordering::Relaxed) {
+                    player_clone.set_volume(0.0);
+                    is_stopped_clone.store(false, Ordering::Relaxed);
+                } else {
+                    player_clone.set_volume(1.0);
+                }
                 if text.trim().is_empty() {
                     continue;
                 }
@@ -67,7 +77,7 @@ impl AudioEngine {
                         );
 
                         player_clone.append(source);
-                        player_clone.set_volume(1.0);
+                        //player_clone.set_volume(1.0);
                         player_clone.play();
                     }
                     Err(e) => {
@@ -81,6 +91,7 @@ impl AudioEngine {
             tx,
             player: player.clone(),
             _mixer_sink: mixer_sink.clone(),
+            is_stopped,
         }
     }
 
@@ -93,6 +104,7 @@ impl AudioEngine {
     }
 
     pub fn stop_audio(&self) {
+        self.is_stopped.store(true, Ordering::Relaxed);
         self.player.set_volume(0.0);
         self.player.stop();
     }

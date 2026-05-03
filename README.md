@@ -1,6 +1,9 @@
 # vadinator
+VAD-(Voice Activity Detection)-inator
 
-A voice-enabled client for chatting with llms. Includes `earshot` Voice Activity Detection (VAD) to cut down on non-vocal input and runs `whisper` locally for speech-to-text. Is intended to be *very* lightweight. Uses `v1/chat/completions/` API to work with different inference servers.
+A voice client for talking to llms. Includes `earshot` Voice Activity Detection (VAD) and runs `whisper` for speech-to-text and `piper` for text-to-speech. Is intended to be lightweight. Uses `v1/chat/completions/` API to work with different inference servers.
+
+Say "ding", or more like "Ding!" or "DING!!", to stop it when it's speaking.
 
 This project and this README is a work in progress.
 

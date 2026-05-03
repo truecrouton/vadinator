@@ -19,6 +19,37 @@ pub struct ConversationEngine {
 }
 
 impl ConversationEngine {
+    fn case_sensitive_replace(text: &str, pattern: &str, replacement: &str) -> String {
+        let haystack_lower = text.to_lowercase();
+        let needle_lower = pattern.to_lowercase();
+        let mut result = String::with_capacity(text.len());
+        let mut last_end = 0;
+
+        for (start, _) in haystack_lower.match_indices(&needle_lower) {
+            // Push the segment before the match
+            result.push_str(&text[last_end..start]);
+
+            let matched_part = &text[start..start + pattern.len()];
+
+            // Pair up characters from the match and the replacement
+            // Note: .chars() handles multi-byte UTF-8 correctly
+            for (m_char, r_char) in matched_part.chars().zip(replacement.chars()) {
+                if m_char.is_uppercase() {
+                    // If original was 'D', make replacement 'C'
+                    result.extend(r_char.to_uppercase());
+                } else {
+                    // If original was 'd' or non-alpha, make replacement 'c'
+                    result.extend(r_char.to_lowercase());
+                }
+            }
+
+            last_end = start + pattern.len();
+        }
+
+        result.push_str(&text[last_end..]);
+        result
+    }
+
     async fn get_message_stream(
         stop_processing: Arc<AtomicBool>,
         payload: Vec<Message>,
@@ -98,8 +129,9 @@ impl ConversationEngine {
 
                     if let Ok(json) = serde_json::from_str::<Value>(data) {
                         if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                            full_response.push_str(content);
-                            current_phrase.push_str(content);
+                            let replaced = Self::case_sensitive_replace(content, "ding", "bing");
+                            full_response.push_str(&replaced);
+                            current_phrase.push_str(&replaced);
 
                             if let Some(index) =
                                 current_phrase.find(|c: char| delimiters.contains(&c))

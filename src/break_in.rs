@@ -52,8 +52,11 @@ impl BreakInEngine {
                 }
                 debug!("😱 Break-in transcription: {}", transcript);
 
-                if transcript.to_lowercase().contains("stop") {
-                    debug!("🛑: {}", transcript);
+                let has_stop_word = transcript
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|word| word.eq_ignore_ascii_case("ding"));
+                if has_stop_word {
+                    debug!("🛑 Stop detected: {}", transcript);
                     ce.stop();
                     ae.stop_audio();
                 }
