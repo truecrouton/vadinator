@@ -19,6 +19,12 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::from_filename("vadinator.env").ok();
     env_logger::init();
 
+    // Install the espeak-ng data to ./espeack-ng-data
+    let mut data_dir = env::current_exe().unwrap();
+    data_dir.pop();
+    data_dir.push("espeak-ng-data");
+    espeak_ng::install_bundled_data(&data_dir).expect("Failed to extract espeak-ng data.");
+
     // Load speech audio engine
     let ae = Arc::new(audio_out::AudioEngine::new());
 

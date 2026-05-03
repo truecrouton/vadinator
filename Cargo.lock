@@ -504,6 +504,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "espeak-ng"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "797dcf553dc7581c714b28dc0f4caabb7bbb98ce3f5b70e3c9c2d2f2f7cce5b2"
+dependencies = [
+ "bitflags 2.11.1",
+ "espeak-ng-data-dict-ru",
+ "espeak-ng-data-dicts",
+ "espeak-ng-data-phonemes",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "espeak-ng-data-dict-ru"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b62f5cac7f103b5ef324f02b2fd883897404eac9766dd21d90864eeb633b7ff"
+
+[[package]]
+name = "espeak-ng-data-dicts"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "393d19356251c91ffc4f08f446af2a5331efb6b6a5e7d109b26172bdea594eea"
+
+[[package]]
+name = "espeak-ng-data-phonemes"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65418fdbf64db690f177ae55b6cb0f01eec5ffd46f5e1cba6f841ae3f214ec0"
+
+[[package]]
 name = "espeak-rs"
 version = "0.1.9"
 source = "git+https://github.com/thewh1teagle/piper-rs.git?rev=616e682#616e6823cc29955bb0cf66532637b352b26fa292"
@@ -2736,6 +2767,7 @@ dependencies = [
  "dotenvy",
  "earshot",
  "env_logger",
+ "espeak-ng",
  "futures-util",
  "log",
  "ndarray 0.17.2",
