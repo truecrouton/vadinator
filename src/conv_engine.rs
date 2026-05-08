@@ -31,6 +31,21 @@ impl ConversationEngine {
 
             let matched_part = &text[start..start + pattern.len()];
 
+            // Only match whole words
+            if let Some(prev_char) = text[..start].chars().last() {
+                if prev_char.is_alphanumeric() {
+                    result.push_str(matched_part);
+                    last_end = start + pattern.len();
+                    continue;
+                }
+            } else if let Some(next_char) = text[start + pattern.len()..].chars().next() {
+                if next_char.is_alphanumeric() {
+                    result.push_str(matched_part);
+                    last_end = start + pattern.len();
+                    continue;
+                }
+            }
+
             // Pair up characters from the match and the replacement
             // Note: .chars() handles multi-byte UTF-8 correctly
             for (m_char, r_char) in matched_part.chars().zip(replacement.chars()) {

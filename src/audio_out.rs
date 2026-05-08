@@ -54,8 +54,9 @@ impl AudioEngine {
                     continue;
                 }
 
-                let ignored_chars = ['*', '#'];
-                let filtered_text: String = text
+                let ignored_chars = ['*', '#', ':'];
+                let emoji_less = Self::remove_emojis(&text);
+                let filtered_text: String = emoji_less
                     .chars()
                     .filter(|&c| !ignored_chars.contains(&c))
                     .collect();
@@ -107,5 +108,32 @@ impl AudioEngine {
         self.is_stopped.store(true, Ordering::Relaxed);
         self.player.set_volume(0.0);
         self.player.stop();
+    }
+
+    fn remove_emojis(input: &str) -> String {
+        let mut output = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            let u = c as u32;
+
+            // The "Symbol Continents": where 99% of emojis live now and in the future.
+            if matches!(u, 0x1F000..=0x1Faff | 0x2600..=0x27BF ) {
+                // It's a symbol! Now eat the (modifiers/glue)
+                while let Some(&next_c) = chars.peek() {
+                    let n = next_c as u32;
+                    // Eat: ZWJ, Variation Selectors, Skin Tones, or more symbols
+                    if matches!(n, 0x200D | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0x1F000..=0x1Faff)
+                    {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                output.push(c);
+            }
+        }
+        output
     }
 }
