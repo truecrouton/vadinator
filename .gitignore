@@ -1,4 +1,6 @@
 /target
 /models
+/data
 about.hbs
 vadinator.env
+.env

@@ -1,5 +1,5 @@
 use crate::audio_out::AudioEngine;
-use crate::chat_history::{ChatHistory, Message};
+use crate::storage::{ChatMessage, Storage};
 use futures_util::StreamExt;
 use log::{debug, error};
 use reqwest::Client;
@@ -67,7 +67,7 @@ impl ConversationEngine {
 
     async fn get_message_stream(
         stop_processing: Arc<AtomicBool>,
-        payload: Vec<Message>,
+        payload: Vec<ChatMessage>,
         speaker_tx: Sender<String>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let client = Client::builder()
@@ -188,13 +188,15 @@ impl ConversationEngine {
         Ok(full_response)
     }
 
-    pub fn new(context: Arc<WhisperContext>, ae: Arc<AudioEngine>, system_prompt: &str) -> Self {
+    pub fn new(context: Arc<WhisperContext>, ae: Arc<AudioEngine>, db: Arc<Storage>) -> Self {
         let (tx, mut rx) = mpsc::channel::<Vec<f32>>(100);
-        let mut history = ChatHistory::new(&system_prompt, 30);
         let stop_processing = Arc::new(AtomicBool::new(false));
 
         let stop_processing_clone = stop_processing.clone();
         std::thread::spawn(move || {
+            let system_prompt = "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.";
+            db.enter_context_sync("start_up", system_prompt);
+
             let mut state = context.create_state().unwrap();
 
             // The thread sits here and waits for audio data
@@ -226,16 +228,16 @@ impl ConversationEngine {
                 }
                 debug!("📣 Voice transcription: {}", transcript);
 
-                history.add_message("user", &transcript);
+                db.add_message_sync("user", &transcript);
 
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 match rt.block_on(Self::get_message_stream(
                     stop_processing_clone.clone(),
-                    history.get_payload(),
+                    db.get_payload_sync(),
                     ae.tx.clone(),
                 )) {
                     Ok(message) => {
-                        history.add_message("assistant", &message);
+                        db.add_message_sync("assistant", &message);
                     }
                     Err(e) => {
                         error!("{:?}", e);

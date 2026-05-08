@@ -1,9 +1,10 @@
 mod audio_out;
 mod audio_proc;
 mod break_in;
-mod chat_history;
 mod conv_engine;
+mod storage;
 
+use crate::storage::Storage;
 use audio_proc::{apply_high_pass, calculate_rms, calculate_zcr, sanitize_frame};
 use conv_engine::ConversationEngine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -25,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
     data_dir.push("espeak-ng-data");
     espeak_ng::install_bundled_data(&data_dir).expect("Failed to extract espeak-ng data.");
 
+    let db = Arc::new(
+        Storage::new()
+            .await
+            .expect("Database failed to Initialize."),
+    );
+
     // Load speech audio engine
     let ae = Arc::new(audio_out::AudioEngine::new());
 
@@ -39,11 +46,10 @@ async fn main() -> anyhow::Result<()> {
     let shared_ctx = Arc::new(ctx);
 
     // Load conversation engine
-    let system_prompt = "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.";
     let ce = Arc::new(ConversationEngine::new(
         shared_ctx.clone(),
         ae.clone(),
-        system_prompt,
+        db.clone(),
     ));
 
     let bie = break_in::BreakInEngine::new(shared_ctx.clone(), ae.clone(), ce.clone());
