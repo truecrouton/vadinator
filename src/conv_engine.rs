@@ -204,10 +204,12 @@ impl ConversationEngine {
                         transcript.push_str(text.trim());
                     }
                 }
-                debug!("📣 Voice transcription: {}", transcript);
-                if transcript.trim() == "[BLANK_AUDIO]" {
+                let empty_speech = vec!["".to_string(), "[BLANK_AUDIO]".to_string()];
+                if empty_speech.contains(&transcript.trim().to_string()) {
+                    debug!("📣 No words to transcribe.");
                     continue;
                 }
+                debug!("📣 Voice transcription: {}", transcript);
 
                 history.add_message("user", &transcript);
 

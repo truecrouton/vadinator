@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let max_silence_frames: usize = env::var("MAX_SILENCE_FRAMES")
         .ok()
         .and_then(|val| val.parse().ok())
-        .unwrap_or(31); // Default 
+        .unwrap_or(62); // Default 
     let min_score_recording: f32 = env::var("MIN_SCORE_RECORDING")
         .ok()
         .and_then(|val| val.parse().ok())
@@ -148,9 +148,11 @@ async fn main() -> anyhow::Result<()> {
             let score = detector.predict_f32(&frame_f32);
 
             if log_enabled!(Level::Debug) {
-                // Print peaks every 4 frames
+                // Print every 4 frames
                 frame_count += 1;
                 if frame_count & 3 == 0 {
+                    let zcr = calculate_zcr(&frame_f32);
+                    let rms = calculate_rms(&frame_f32);
                     let peak = frame_f32.iter().map(|s| s.abs()).fold(0.0, f32::max);
                     let bar_len = (peak * 30.0) as usize; // Map 0.0-1.0 to 0-30 chars
                     let bar = "█".repeat(bar_len.min(30));
@@ -160,7 +162,10 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         min_score_wake
                     };
-                    print!("Vol: [{:<30}] {:.2} {:.2}", bar, score, threshold);
+                    print!(
+                        "Vol: [{:<30}] {:.2}/{:.2} {:.2} {:.2}",
+                        bar, score, threshold, rms, zcr
+                    );
                     print!("\r");
                     io::stdout().flush().unwrap();
 
@@ -190,10 +195,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if !is_recording {
-                let rms = calculate_rms(&frame_f32);
-                let zcr = calculate_zcr(&frame_f32);
-
-                if score > min_score_wake && rms > 0.02 && zcr < 60 {
+                if score > min_score_wake {
                     debug!("🔥 VOICE DETECTED! (Score: {:.2})", score);
                     debug!("🎤 Starting new recording...");
                     is_recording = true;
@@ -224,6 +226,8 @@ async fn main() -> anyhow::Result<()> {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
                         let _ = ae.tx.send("Interesting.".to_string()).await;
                         let _ = ce.tx.send(audio_to_process).await;
+                    } else {
+                        debug!("🚫 Not enough speech samples: {}", recording_buffer.len())
                     }
 
                     // Reset everything for the next phrase
