@@ -1,0 +1,187 @@
+use crate::{audio_out::AudioEngine, conv_engine::ConversationEngine, storage::Storage};
+use axum::{
+    Json, Router,
+    extract::State,
+    response::{IntoResponse, Response},
+    routing::post,
+};
+use axum_valid::Valid;
+use log::{error, info};
+use serde::Deserialize;
+use serde_json::Value;
+use std::{str::FromStr, sync::Arc};
+use validator::Validate;
+
+#[derive(Deserialize, Validate)]
+pub struct AddMessage {
+    #[validate(length(min = 1, max = 30))]
+    pub context: String,
+    pub message: Value,
+}
+
+#[derive(Deserialize, Validate)]
+pub struct Discuss {
+    #[validate(length(min = 1, max = 30))]
+    pub about: String,
+}
+
+#[derive(Deserialize, Validate)]
+pub struct StashJsonContent {
+    #[validate(length(min = 1, max = 30))]
+    pub source: String,
+    #[validate(length(min = 1, max = 30))]
+    pub source_type: String,
+    #[validate(length(min = 1, max = 30))]
+    pub topic: String,
+    pub content: Value,
+}
+
+#[derive(Clone)] // Must be Clone to work with State
+pub struct HttpServer {
+    ae: Arc<AudioEngine>,
+    ce: Arc<ConversationEngine>,
+    db: Arc<Storage>,
+}
+
+impl HttpServer {
+    pub fn new(ae: Arc<AudioEngine>, ce: Arc<ConversationEngine>, db: Arc<Storage>) -> Self {
+        Self { ae, ce, db }
+    }
+
+    pub async fn start_server(self, host_address: &str) {
+        let app: Router = Router::new()
+            .route("/add_message", post(Self::add_message))
+            .route("/stash_json_content", post(Self::stash_json_content))
+            .route("/discuss_topic", post(Self::discuss_topic))
+            .with_state(self);
+
+        let addr =
+            std::net::SocketAddr::from_str(host_address).expect("Invalid HOST_ADDRESS provided.");
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                info!("Starting HTTP server at: {}", addr);
+                axum::serve(listener, app)
+                    .await
+                    .expect("Failed to start HTTP server.");
+            }
+            Err(e) => {
+                error!("Failed to bind to address: {}", e);
+            }
+        }
+    }
+
+    async fn add_message(
+        State(state): State<HttpServer>,
+        Valid(Json(payload)): Valid<Json<AddMessage>>,
+    ) -> Response {
+        let message = payload.message.to_string();
+        if let Err(e) = state.db.add_message("tool", &message).await {
+            error!("Could not add message: {}", e);
+            state.ce.stop();
+            state.ae.stop_audio();
+            state
+                .ae
+                .buffer(
+                    "I just received a message but I cannot remember what it said.".to_string(),
+                    true,
+                )
+                .await;
+        }
+
+        "ok".into_response()
+    }
+
+    async fn stash_json_content(
+        State(state): State<HttpServer>,
+        Valid(Json(payload)): Valid<Json<StashJsonContent>>,
+    ) -> Response {
+        let json_string = payload.content.to_string();
+        if let Err(e) = state
+            .db
+            .stash_json_content(
+                &payload.source,
+                &payload.source_type,
+                &payload.topic,
+                &json_string,
+            )
+            .await
+        {
+            error!("Could not stash content: {}", e);
+            state.ce.stop();
+            state.ae.stop_audio();
+            state
+                .ae
+                .buffer(
+                    "I just received some content but I cannot save it.".to_string(),
+                    true,
+                )
+                .await;
+        }
+
+        "ok".into_response()
+    }
+
+    async fn discuss_topic(
+        State(state): State<HttpServer>,
+        Valid(Json(payload)): Valid<Json<Discuss>>,
+    ) -> Response {
+        state.ce.stop();
+        state.ae.stop_audio();
+
+        if let Err(e) = state.ce.discuss_topic(&payload.about).await {
+            error!("Could not resume chat: {}", e);
+            state
+                .ae
+                .buffer(
+                    "I just received a message but I cannot chat about it.".to_string(),
+                    true,
+                )
+                .await;
+        }
+
+        "ok".into_response()
+    }
+}
+
+/*
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt; // for oneshot
+
+    #[tokio::test]
+    async fn test_full_router_validation() {
+        dotenvy::from_filename("vadinator.env").ok();
+        env_logger::init();
+
+        let ae = Arc::new(AudioEngine::new());
+
+        let server = HttpServer::new(ae, db);
+
+        // Build the actual app router
+        let app = Router::new()
+            .route("/users", post(HttpServer::accept_form))
+            .with_state(server);
+
+        let body_str = "username=stu&email=george@home.com";
+
+        // Create a mock HTTP POST request
+        let request = Request::builder()
+            .method("POST")
+            .uri("/users")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body_str)) // Too short! Should fail validation
+            .unwrap();
+
+        // Send the request to the app
+        let response = app.oneshot(request).await.unwrap();
+
+        // If using axum-valid, this would return 400 Bad Request
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+*/

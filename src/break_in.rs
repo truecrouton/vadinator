@@ -30,14 +30,7 @@ impl BreakInEngine {
                     continue;
                 }
 
-                let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-
-                // Disable the "Standard" Whisper chatter
-                params.set_print_special(false);
-                params.set_print_progress(false);
-                params.set_print_realtime(false);
-                params.set_print_timestamps(false);
-                params.set_suppress_blank(true);
+                let params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
                 break_in_state
                     .full(params, &audio_data[..])

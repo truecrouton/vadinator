@@ -10,8 +10,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::{self, Sender};
 
+enum Transcript {
+    Text(String),
+    Beginning,
+}
+
 pub struct AudioEngine {
-    pub tx: Sender<String>,
+    tx: Sender<Transcript>,
     player: Arc<Player>,
     _mixer_sink: Arc<MixerDeviceSink>, // Hold this or no audio output
     is_stopped: Arc<AtomicBool>,
@@ -19,8 +24,8 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
-        let (tx, mut rx) = mpsc::channel::<String>(100);
-        let is_stopped = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel::<Transcript>(100);
+        let is_stopped = Arc::new(AtomicBool::new(true));
 
         let mixer_sink =
             Arc::new(DeviceSinkBuilder::open_default_sink().expect("Could not open audio device"));
@@ -43,46 +48,54 @@ impl AudioEngine {
 
             info!("🔈 Speech output is ready.");
 
-            while let Some(text) = rx.blocking_recv() {
-                if is_stopped_clone.load(Ordering::Relaxed) {
-                    player_clone.set_volume(0.0);
-                    is_stopped_clone.store(false, Ordering::Relaxed);
-                } else {
-                    player_clone.set_volume(1.0);
-                }
-                if text.trim().is_empty() {
-                    continue;
-                }
-
-                let ignored_chars = ['*', '#', ':'];
-                let emoji_less = Self::remove_emojis(&text);
-                let filtered_text: String = emoji_less
-                    .chars()
-                    .filter(|&c| !ignored_chars.contains(&c))
-                    .collect();
-
-                match piper.create(
-                    &filtered_text,
-                    false,      // raw? false
-                    speaker_id, // speaker index
-                    None,       // length_scale (speed)
-                    None,       // noise_scale
-                    None,
-                ) {
-                    Ok((samples, sample_rate)) => {
-                        // Success so play the audio
-                        let source = SamplesBuffer::new(
-                            NonZeroU16::new(1).unwrap(), // Channels
-                            NonZeroU32::new(sample_rate).unwrap(),
-                            samples,
-                        );
-
-                        player_clone.append(source);
-                        //player_clone.set_volume(1.0);
-                        player_clone.play();
+            while let Some(transcript) = rx.blocking_recv() {
+                match transcript {
+                    Transcript::Beginning => {
+                        is_stopped_clone.store(false, Ordering::Relaxed);
+                        player_clone.set_volume(1.0);
                     }
-                    Err(e) => {
-                        error!("Failed to say '{}'. Error: {:?}", text, e);
+                    Transcript::Text(text) => {
+                        if is_stopped_clone.load(Ordering::Relaxed) {
+                            player_clone.set_volume(0.0);
+                            continue;
+                        } else {
+                            player_clone.set_volume(1.0);
+                        }
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+
+                        let ignored_chars = ['*', '#'];
+                        let emoji_less = Self::remove_emojis(&text);
+                        let filtered_text: String = emoji_less
+                            .chars()
+                            .filter(|&c| !ignored_chars.contains(&c))
+                            .collect();
+
+                        match piper.create(
+                            &filtered_text,
+                            false,      // raw? false
+                            speaker_id, // speaker index
+                            None,       // length_scale (speed)
+                            None,       // noise_scale
+                            None,
+                        ) {
+                            Ok((samples, sample_rate)) => {
+                                // Success so play the audio
+                                let source = SamplesBuffer::new(
+                                    NonZeroU16::new(1).unwrap(), // Channels
+                                    NonZeroU32::new(sample_rate).unwrap(),
+                                    samples,
+                                );
+
+                                player_clone.append(source);
+                                //player_clone.set_volume(1.0);
+                                player_clone.play();
+                            }
+                            Err(e) => {
+                                error!("Failed to say '{}'. Error: {:?}", text, e);
+                            }
+                        }
                     }
                 }
             }
@@ -108,6 +121,22 @@ impl AudioEngine {
         self.is_stopped.store(true, Ordering::Relaxed);
         self.player.set_volume(0.0);
         self.player.stop();
+    }
+
+    pub async fn buffer(&self, text: String, transcript_start: bool) {
+        if transcript_start {
+            let _ = self.tx.send(Transcript::Beginning).await;
+        }
+
+        let _ = self.tx.send(Transcript::Text(text)).await;
+    }
+
+    pub fn blocking_buffer(&self, text: String, transcript_start: bool) {
+        if transcript_start {
+            self.tx.blocking_send(Transcript::Beginning).ok();
+        }
+
+        self.tx.blocking_send(Transcript::Text(text)).ok();
     }
 
     fn remove_emojis(input: &str) -> String {

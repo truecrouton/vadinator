@@ -2,8 +2,10 @@ mod audio_out;
 mod audio_proc;
 mod break_in;
 mod conv_engine;
+mod http_server;
 mod storage;
 
+use crate::http_server::HttpServer;
 use crate::storage::Storage;
 use audio_proc::{apply_high_pass, calculate_rms, calculate_zcr, sanitize_frame};
 use conv_engine::ConversationEngine;
@@ -54,8 +56,17 @@ async fn main() -> anyhow::Result<()> {
 
     let bie = break_in::BreakInEngine::new(shared_ctx.clone(), ae.clone(), ce.clone());
 
+    if let Ok(host_address) = env::var("HOST_ADDRESS") {
+        let http = HttpServer::new(ae.clone(), ce.clone(), db.clone());
+        tokio::spawn(async move {
+            http.start_server(&host_address).await;
+        });
+    }
+
     // Say hello
-    let _ = ae.tx.send("Hello, I'm ready to chat.".to_string()).await;
+    let _ = ae
+        .buffer("Hello, I'm ready to chat.".to_string(), true)
+        .await;
 
     // Initialize the VAD "Detector"
     // Earshot is stateful, so it remembers the "noise" in your room.
@@ -63,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up the Microphone (CPAL)
     let host = cpal::default_host();
-    let device = host.default_input_device().expect("No mic found, boss.");
+    let device = host.default_input_device().expect("No mic found.");
     // Search for a 48kHz config
     let supported_config = device
         .supported_input_configs()?
@@ -230,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
                     // Send to whisper at least 1 second of audio
                     if recording_buffer.len() > 16000 {
                         let audio_to_process = std::mem::take(&mut recording_buffer);
-                        let _ = ae.tx.send("Interesting.".to_string()).await;
+                        let _ = ae.buffer("Interesting.".to_string(), true).await;
                         let _ = ce.tx.send(audio_to_process).await;
                     } else {
                         debug!("🚫 Not enough speech samples: {}", recording_buffer.len())

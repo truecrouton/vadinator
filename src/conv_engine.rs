@@ -1,5 +1,6 @@
 use crate::audio_out::AudioEngine;
 use crate::storage::{ChatMessage, Storage};
+use anyhow::anyhow;
 use futures_util::StreamExt;
 use log::{debug, error};
 use reqwest::Client;
@@ -15,6 +16,8 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 pub struct ConversationEngine {
     pub tx: Sender<Vec<f32>>,
+    ae: Arc<AudioEngine>,
+    db: Arc<Storage>,
     stop_processing: Arc<AtomicBool>,
 }
 
@@ -68,8 +71,8 @@ impl ConversationEngine {
     async fn get_message_stream(
         stop_processing: Arc<AtomicBool>,
         payload: Vec<ChatMessage>,
-        speaker_tx: Sender<String>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+        ae: Arc<AudioEngine>,
+    ) -> Result<String, anyhow::Error> {
         let client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(300))
@@ -89,22 +92,22 @@ impl ConversationEngine {
             error!("Server status code: {}, url: {}", res.status(), res.url());
 
             if res.status().is_server_error() {
-                let _ = speaker_tx
-                    .send(
+                let _ = ae
+                    .buffer(
                         format!(
                             "My brain is crashing. All I see is the number {}.",
                             res.status()
-                        )
-                        .to_string(),
+                        ),
+                        true,
                     )
                     .await;
             } else {
-                let _ = speaker_tx
-                    .send("I can't respond to your request.".to_string())
+                let _ = ae
+                    .buffer("I can't respond to your request.".to_string(), true)
                     .await;
             }
 
-            return Err(format!("Server status code: {}, url: {}", res.status(), res.url()).into());
+            return Err(anyhow!("Server status code: {}, url: {}", res.status(), res.url()).into());
         }
 
         // Convert the reqwest Body into a AsyncRead-compatible byte stream
@@ -122,6 +125,7 @@ impl ConversationEngine {
         let delimiters = ['.', '!', '?'];
 
         stop_processing.store(false, Ordering::Relaxed);
+        let mut start_transcript = true;
         while let Some(l) = lines.next().await {
             match timeout(Duration::from_secs(3), std::future::ready(l)).await {
                 Ok(line) => {
@@ -158,7 +162,8 @@ impl ConversationEngine {
                                 let completed_phrase = current_phrase; // 'buffer' now only contains the sentence
 
                                 debug!("🤖 Stream: {}", completed_phrase.trim());
-                                let _ = speaker_tx.send(completed_phrase).await;
+                                let _ = ae.buffer(completed_phrase, start_transcript).await;
+                                start_transcript = false;
 
                                 // Put the leftover part back into the buffer for the next token
                                 current_phrase = remaining;
@@ -167,10 +172,10 @@ impl ConversationEngine {
                     }
                 }
                 Err(e) => {
-                    let _ = speaker_tx
-                    .send(
+                    let _ = ae
+                    .buffer(
                         "Sorry, I think my brain stopped working in the middle of this thought."
-                            .to_string(),
+                            .to_string(), true,
                     )
                     .await;
                     return Err(e.into());
@@ -180,7 +185,7 @@ impl ConversationEngine {
 
         if !current_phrase.trim().is_empty() {
             let remaining_content = std::mem::take(&mut current_phrase);
-            let _ = speaker_tx.send(remaining_content).await;
+            let _ = ae.buffer(remaining_content, false).await;
             current_phrase.clear();
         }
 
@@ -193,22 +198,14 @@ impl ConversationEngine {
         let stop_processing = Arc::new(AtomicBool::new(false));
 
         let stop_processing_clone = stop_processing.clone();
+        let ae_clone = ae.clone();
+        let db_clone = db.clone();
         std::thread::spawn(move || {
-            let system_prompt = "You are a friendly and knowledgeable collaborator. Your tone is conversational, warm, and professional but relaxed. Avoid corporate jargon or overly formal 'As an AI' hedging. Speak like a smart friend—use natural transitions, show curiosity about the user's goals, and vary your sentence structure to keep the rhythm of the conversation lively. If the user is excited, mirror that energy; if they are frustrated, be empathetic and grounded. Keep responses punchy and avoid dry, list-heavy walls of text unless specifically asked.";
-            db.enter_context_sync("start_up", system_prompt);
-
             let mut state = context.create_state().unwrap();
 
             // The thread sits here and waits for audio data
             while let Some(audio_data) = rx.blocking_recv() {
-                let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-
-                // Disable the "Standard" Whisper chatter
-                params.set_print_special(false);
-                params.set_print_progress(false);
-                params.set_print_realtime(false);
-                params.set_print_timestamps(false);
-                params.set_suppress_blank(true);
+                let params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
                 state
                     .full(params, &audio_data[..])
@@ -228,24 +225,23 @@ impl ConversationEngine {
                 }
                 debug!("📣 Voice transcription: {}", transcript);
 
-                db.add_message_sync("user", &transcript);
+                db_clone.add_message_sync("user", &transcript);
 
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 match rt.block_on(Self::get_message_stream(
                     stop_processing_clone.clone(),
-                    db.get_payload_sync(),
-                    ae.tx.clone(),
+                    db_clone.get_payload_sync(),
+                    ae_clone.clone(),
                 )) {
                     Ok(message) => {
-                        db.add_message_sync("assistant", &message);
+                        db_clone.add_message_sync("assistant", &message);
                     }
                     Err(e) => {
                         error!("{:?}", e);
-                        ae.tx
-                            .blocking_send(
-                                "My brain seems to be disconnected or something.".to_string(),
-                            )
-                            .ok();
+                        ae_clone.blocking_buffer(
+                            "My brain seems to be disconnected or something.".to_string(),
+                            true,
+                        );
                     }
                 }
             }
@@ -254,10 +250,39 @@ impl ConversationEngine {
         Self {
             tx,
             stop_processing,
+            ae,
+            db,
         }
     }
 
     pub fn stop(&self) {
         self.stop_processing.store(true, Ordering::Relaxed);
+    }
+
+    pub async fn discuss_topic(&self, topic: &str) -> Result<(), anyhow::Error> {
+        let message = self.db.synthesize_message(topic).await?;
+        self.db.add_message("user", &message).await?;
+
+        let stop_processing_clone = self.stop_processing.clone();
+        let db = self.db.clone();
+        let ae = self.ae.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(Self::get_message_stream(
+                stop_processing_clone.clone(),
+                db.get_payload_sync(),
+                ae.clone(),
+            )) {
+                Ok(message) => {
+                    db.add_message_sync("assistant", &message);
+                }
+                Err(e) => {
+                    error!("{:?}", e);
+                    ae.blocking_buffer("I lost contact with my brain.".to_string(), true);
+                }
+            }
+        });
+
+        Ok(())
     }
 }
