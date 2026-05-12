@@ -266,11 +266,23 @@ impl ConversationEngine {
             return Ok(());
         }
 
-        self.db.add_message("user", &message).await?;
+        let mut instruction = String::new();
+        // Wrap instruction in its own tag
+        instruction.push_str("[INSTRUCTIONS]\n");
+        instruction
+            .push_str("  Review the system information and report notable items to the user.\n");
+        instruction.push_str("  Make sure your report is succinct while also ensuring some context is provided to the user.\n");
+        instruction.push_str("  As it relates to the system information, do NOT offer any assistance because your are only capable of reporting.");
+
+        self.db
+            .add_message("user", &message, Some(&instruction))
+            .await?;
 
         let stop_processing_clone = self.stop_processing.clone();
         let db = self.db.clone();
         let ae = self.ae.clone();
+        self.stop();
+        ae.stop_audio();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             match rt.block_on(Self::get_message_stream(

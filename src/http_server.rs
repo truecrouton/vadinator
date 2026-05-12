@@ -75,17 +75,8 @@ impl HttpServer {
         Valid(Json(payload)): Valid<Json<AddMessage>>,
     ) -> Response {
         let message = payload.message.to_string();
-        if let Err(e) = state.db.add_message("tool", &message).await {
+        if let Err(e) = state.db.add_message("user", &message, None).await {
             error!("Could not add message: {}", e);
-            state.ce.stop();
-            state.ae.stop_audio();
-            state
-                .ae
-                .buffer(
-                    "I just received a message but I cannot remember what it said.".to_string(),
-                    true,
-                )
-                .await;
         }
 
         "ok".into_response()
@@ -107,15 +98,6 @@ impl HttpServer {
             .await
         {
             error!("Could not stash content: {}", e);
-            state.ce.stop();
-            state.ae.stop_audio();
-            state
-                .ae
-                .buffer(
-                    "I just received some content but I cannot save it.".to_string(),
-                    true,
-                )
-                .await;
         }
 
         "ok".into_response()
@@ -125,9 +107,6 @@ impl HttpServer {
         State(state): State<HttpServer>,
         Valid(Json(payload)): Valid<Json<Discuss>>,
     ) -> Response {
-        state.ce.stop();
-        state.ae.stop_audio();
-
         if let Err(e) = state.ce.discuss_topic(&payload.topic).await {
             error!("Could not resume chat: {}", e);
             state

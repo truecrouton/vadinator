@@ -84,10 +84,16 @@ impl Storage {
         Ok(new_id)
     }
 
-    pub async fn add_message(&self, role: &str, content: &str) -> Result<(), sqlx::Error> {
-        let _ = sqlx::query("INSERT INTO message (role, content, context_id) VALUES ($1, $2, $3)")
-            .bind(role)
-            .bind(content)
+    pub async fn add_message(
+        &self,
+        role: &str,
+        content: &str,
+        inject_prompt: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let _ = sqlx::query("INSERT INTO message (role, content, inject_prompt, context_id) VALUES ($1, $2, $3, $4)")
+            .bind(role.trim())
+            .bind(content.trim())
+            .bind(inject_prompt)
             .bind(self.context_id.load(std::sync::atomic::Ordering::SeqCst))
             .execute(&self.pool)
             .await?;
@@ -97,7 +103,7 @@ impl Storage {
 
     pub fn add_message_sync(&self, role: &str, content: &str) {
         self.runtime.block_on(async {
-            self.add_message(role, content)
+            self.add_message(role, content, None)
                 .await
                 .expect("DB: Could not add message.")
         })
@@ -110,14 +116,22 @@ impl Storage {
                 .fetch_one(&self.pool)
                 .await?;
 
-        let mut messages = sqlx::query_as::<_, ChatMessage>(
-            "SELECT role, content FROM message WHERE context_id=$1 ORDER BY message_id ASC",
+        #[derive(FromRow, Serialize, Deserialize, Clone, Debug)]
+        pub struct MessageRow {
+            pub role: String,
+            pub content: String,
+            pub inject_prompt: Option<String>,
+        }
+
+        let messages = sqlx::query_as::<_,MessageRow>(
+            "SELECT role, content, inject_prompt FROM message WHERE context_id=$1 ORDER BY message_id ASC",
         )
         .bind(self.context_id.load(std::sync::atomic::Ordering::SeqCst))
         .fetch_all(&self.pool)
         .await?;
 
-        messages.insert(
+        let mut payload: Vec<ChatMessage> = Vec::new();
+        payload.insert(
             0,
             ChatMessage {
                 role: "system".to_string(),
@@ -125,7 +139,27 @@ impl Storage {
             },
         );
 
-        Ok(messages)
+        let len = messages.len();
+
+        for i in 0..len {
+            let msg = &messages[i];
+
+            if i == len - 1
+                && let Some(prompt) = &msg.inject_prompt
+            {
+                payload.push(ChatMessage {
+                    role: msg.role.clone(),
+                    content: format!("{}\n{}", msg.content, prompt),
+                });
+            } else {
+                payload.push(ChatMessage {
+                    role: msg.role.clone(),
+                    content: msg.content.clone(),
+                });
+            }
+        }
+
+        Ok(payload)
     }
 
     pub fn get_payload_sync(&self) -> Vec<ChatMessage> {
@@ -162,7 +196,7 @@ impl Storage {
         tr.commit().await?;
 
         let mut xml = String::new();
-        xml.push_str("  <system_information topic=\"");
+        xml.push_str("<system_information topic=\"");
         xml.push_str(&Self::escape_xml(&topic));
         xml.push_str("\">\n");
 
@@ -206,12 +240,6 @@ impl Storage {
         }
 
         xml.push_str("</system_information>\n");
-
-        // Wrap instruction in its own tag
-        xml.push_str("[INSTRUCTIONS]\n");
-        xml.push_str("  Review the system data and report notable items to the user.\n");
-        xml.push_str("  Make sure your report is succinct while also ensuring some context is provided to the user.\n");
-        xml.push_str("  Do NOT offer any assistance because your are only capable of reporting.\n");
 
         Ok(xml)
     }
