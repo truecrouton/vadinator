@@ -137,13 +137,29 @@ impl Storage {
     }
 
     pub async fn synthesize_message(&self, topic: &str) -> Result<String, sqlx::Error> {
+        let mut tr = self.pool.begin().await?;
+
         let stashed:Vec<StashRow> = sqlx::query_as(
-            "SELECT source, source_type, content FROM stash WHERE context_id=$1 and topic=$2 ORDER BY stash_id ASC"
+            "SELECT source, source_type, content FROM stash WHERE context_id=$1 AND topic=$2 AND reads=0 ORDER BY stash_id ASC"
         )
         .bind(self.context_id.load(std::sync::atomic::Ordering::SeqCst))
         .bind(topic)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tr)
         .await?;
+
+        if stashed.len() == 0 {
+            return Ok("".to_string());
+        }
+
+        sqlx::query(
+            "UPDATE stash SET reads=reads + 1 WHERE context_id=$1 AND topic=$2 AND reads=0",
+        )
+        .bind(self.context_id.load(std::sync::atomic::Ordering::SeqCst))
+        .bind(topic)
+        .execute(&mut *tr)
+        .await?;
+
+        tr.commit().await?;
 
         let mut xml = String::new();
         xml.push_str("  <system_information topic=\"");
@@ -182,7 +198,7 @@ impl Storage {
                         }
                         xml.push_str("</");
                         xml.push_str(&Self::escape_xml(key));
-                        xml.push_str("\">");
+                        xml.push_str("\">\n");
                     }
                     xml.push_str("  </data>\n");
                 }
@@ -195,9 +211,7 @@ impl Storage {
         xml.push_str("[INSTRUCTIONS]\n");
         xml.push_str("  Review the system data and report notable items to the user.\n");
         xml.push_str("  Make sure your report is succinct while also ensuring some context is provided to the user.\n");
-        xml.push_str("  If anything seems out of the ordinary provide a succinct and useful recommendation.\n");
-
-        println!("😝 XML: {}", xml);
+        xml.push_str("  Do NOT offer any assistance because your are only capable of reporting.\n");
 
         Ok(xml)
     }
@@ -210,7 +224,7 @@ impl Storage {
             .replace('\'', "&apos;")
     }
 
-    pub async fn stash_json_content(
+    pub async fn stash_content(
         &self,
         source: &str,
         source_type: &str,

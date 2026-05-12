@@ -5,6 +5,7 @@ CREATE TABLE stash (
     source_type TEXT NOT NULL,
     topic TEXT NOT NULL,
     content TEXT NOT NULL,
+    reads INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 

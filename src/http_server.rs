@@ -22,7 +22,7 @@ pub struct AddMessage {
 #[derive(Deserialize, Validate)]
 pub struct Discuss {
     #[validate(length(min = 1, max = 30))]
-    pub about: String,
+    pub topic: String,
 }
 
 #[derive(Deserialize, Validate)]
@@ -51,7 +51,7 @@ impl HttpServer {
     pub async fn start_server(self, host_address: &str) {
         let app: Router = Router::new()
             .route("/add_message", post(Self::add_message))
-            .route("/stash_json_content", post(Self::stash_json_content))
+            .route("/stash_content", post(Self::stash_content))
             .route("/discuss_topic", post(Self::discuss_topic))
             .with_state(self);
 
@@ -91,14 +91,14 @@ impl HttpServer {
         "ok".into_response()
     }
 
-    async fn stash_json_content(
+    async fn stash_content(
         State(state): State<HttpServer>,
         Valid(Json(payload)): Valid<Json<StashJsonContent>>,
     ) -> Response {
         let json_string = payload.content.to_string();
         if let Err(e) = state
             .db
-            .stash_json_content(
+            .stash_content(
                 &payload.source,
                 &payload.source_type,
                 &payload.topic,
@@ -128,7 +128,7 @@ impl HttpServer {
         state.ce.stop();
         state.ae.stop_audio();
 
-        if let Err(e) = state.ce.discuss_topic(&payload.about).await {
+        if let Err(e) = state.ce.discuss_topic(&payload.topic).await {
             error!("Could not resume chat: {}", e);
             state
                 .ae
@@ -142,46 +142,3 @@ impl HttpServer {
         "ok".into_response()
     }
 }
-
-/*
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
-    use tower::ServiceExt; // for oneshot
-
-    #[tokio::test]
-    async fn test_full_router_validation() {
-        dotenvy::from_filename("vadinator.env").ok();
-        env_logger::init();
-
-        let ae = Arc::new(AudioEngine::new());
-
-        let server = HttpServer::new(ae, db);
-
-        // Build the actual app router
-        let app = Router::new()
-            .route("/users", post(HttpServer::accept_form))
-            .with_state(server);
-
-        let body_str = "username=stu&email=george@home.com";
-
-        // Create a mock HTTP POST request
-        let request = Request::builder()
-            .method("POST")
-            .uri("/users")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(body_str)) // Too short! Should fail validation
-            .unwrap();
-
-        // Send the request to the app
-        let response = app.oneshot(request).await.unwrap();
-
-        // If using axum-valid, this would return 400 Bad Request
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-}
-*/

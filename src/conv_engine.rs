@@ -261,6 +261,11 @@ impl ConversationEngine {
 
     pub async fn discuss_topic(&self, topic: &str) -> Result<(), anyhow::Error> {
         let message = self.db.synthesize_message(topic).await?;
+        if message.len() == 0 {
+            debug!("No stashed data to discuss for: {}.", topic);
+            return Ok(());
+        }
+
         self.db.add_message("user", &message).await?;
 
         let stop_processing_clone = self.stop_processing.clone();
